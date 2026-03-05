@@ -3,6 +3,8 @@
 一个基于 SwiftUI 的 macOS Gotify 客户端，纯 Vide Coding。
 支持实时接收消息、历史消息查看、侧边栏按应用筛选、状态栏通知面板等。
 
+![macos-gotify](macos-gotify.png)
+
 ## 功能
 
 - 实时 WebSocket 接收 Gotify 消息
