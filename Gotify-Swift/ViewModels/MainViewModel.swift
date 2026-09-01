@@ -3,6 +3,7 @@ import Combine
 import AppKit
 import CryptoKit
 import ImageIO
+import ServiceManagement
 
 @MainActor
 final class MainViewModel: ObservableObject {
@@ -14,15 +15,18 @@ final class MainViewModel: ObservableObject {
     @Published var selectedAppID: Int = MainViewModel.allAppsSelectionID
     @Published var serverURL: String = ""
     @Published var clientToken: String = ""
+    @Published var launchAtLoginEnabled: Bool
     @Published var messageFontSize: Double = 14 {
         didSet {
             settings.messageFontSize = messageFontSize
         }
     }
     @Published var focusedMessageID: Int?
-    @Published private(set) var connectionStatusText: String = "未连接"
+    @Published private(set) var connectionStatusText: String = L10n.text("connection.idle")
     @Published private(set) var lastConnectionErrorText: String = ""
+    @Published private(set) var launchAtLoginErrorText: String = ""
     @Published private(set) var isRefreshing = false
+    @Published private(set) var deletingMessageIDs: Set<Int> = []
 
     private let settings = AppSettings.shared
     private let socketService = GotifyWebSocketService()
@@ -30,10 +34,15 @@ final class MainViewModel: ObservableObject {
     private let iconCache = AppIconCache()
     private var loadingAppIconIDs: Set<Int> = []
     private var hasStarted = false
+    private var currentConnectionState: GotifyWebSocketService.ConnectionState = .idle
+    private var maintenanceTask: Task<Void, Never>?
+    private var workspaceWakeObserver: NSObjectProtocol?
+    private var isBackgroundSyncing = false
 
     init() {
         serverURL = settings.serverURL
         clientToken = settings.clientToken
+        launchAtLoginEnabled = Self.currentLaunchAtLoginEnabled()
         messageFontSize = settings.messageFontSize
 
         socketService.onMessage = { [weak self] message in
@@ -46,6 +55,21 @@ final class MainViewModel: ObservableObject {
         }
     }
 
+    func setLaunchAtLoginEnabled(_ enabled: Bool) {
+        do {
+            if enabled {
+                try SMAppService.mainApp.register()
+            } else {
+                try SMAppService.mainApp.unregister()
+            }
+            launchAtLoginEnabled = enabled
+            launchAtLoginErrorText = ""
+        } catch {
+            launchAtLoginEnabled = Self.currentLaunchAtLoginEnabled()
+            launchAtLoginErrorText = L10n.format("error.launch_at_login_failed", error.localizedDescription)
+        }
+    }
+
     func start() {
         guard !hasStarted else { return }
         hasStarted = true
@@ -53,6 +77,8 @@ final class MainViewModel: ObservableObject {
             await refreshMessagesInternal()
         }
         connectIfPossible()
+        startMaintenanceLoop()
+        installWakeObserverIfNeeded()
     }
 
     func saveSettingsAndReconnect() {
@@ -115,12 +141,17 @@ final class MainViewModel: ObservableObject {
         focusedMessageID = messageID
     }
 
+    func clearFocusedMessage(_ messageID: Int? = nil) {
+        guard messageID == nil || focusedMessageID == messageID else { return }
+        focusedMessageID = nil
+    }
+
     func appName(for appID: Int?) -> String {
-        guard let appID else { return "Unknown App" }
+        guard let appID else { return L10n.text("app.unknown") }
         if let app = applications.first(where: { $0.id == appID }) {
             return app.name
         }
-        return "App \(appID)"
+        return L10n.format("app.fallback_format", appID)
     }
 
     func icon(for appID: Int?) -> NSImage? {
@@ -159,18 +190,29 @@ final class MainViewModel: ObservableObject {
     }
 
     func deleteMessage(_ message: GotifyMessage) {
+        guard !deletingMessageIDs.contains(message.id) else { return }
+        guard let existingIndex = messages.firstIndex(where: { $0.id == message.id }) else { return }
+        let removedMessage = messages.remove(at: existingIndex)
+        deletingMessageIDs.insert(message.id)
         Task {
             do {
                 try await apiService.deleteMessage(serverURL: serverURL, token: clientToken, messageID: message.id)
-                messages.removeAll { $0.id == message.id }
             } catch {
-                lastConnectionErrorText = "删除通知失败: \(error.localizedDescription)"
+                messages.insert(removedMessage, at: min(existingIndex, messages.count))
+                messages.sort(by: Self.sortMessages)
+                lastConnectionErrorText = L10n.format("error.delete_message_failed", error.localizedDescription)
             }
+            deletingMessageIDs.remove(message.id)
         }
     }
 
     private func connectIfPossible() {
         socketService.connect(serverURL: serverURL, token: clientToken)
+    }
+
+    private static func currentLaunchAtLoginEnabled() -> Bool {
+        let status = SMAppService.mainApp.status
+        return status == .enabled || status == .requiresApproval
     }
 
     private func refreshMessagesInternal(limit: Int = 100) async {
@@ -179,11 +221,11 @@ final class MainViewModel: ObservableObject {
         defer { isRefreshing = false }
 
         do {
-            let recent = try await apiService.fetchRecentMessages(serverURL: serverURL, token: clientToken, limit: limit)
-            mergeMessages(recent)
+            let recent = try await fetchMessageSnapshot(targetCount: max(limit, min(max(messages.count + 20, 100), 1000)))
+            replaceMessages(with: recent)
             mergeApplicationsFromMessages()
         } catch {
-            lastConnectionErrorText = "拉取历史消息失败: \(error.localizedDescription)"
+            lastConnectionErrorText = L10n.format("error.fetch_history_failed", error.localizedDescription)
         }
 
         do {
@@ -191,6 +233,34 @@ final class MainViewModel: ObservableObject {
             mergeApplications(apps)
         } catch {
             // Some tokens cannot access /application; keep sidebar from message appid fallback.
+        }
+    }
+
+    private func syncRecentMessagesForReliability(limit: Int = 100) async {
+        if isRefreshing || isBackgroundSyncing { return }
+        isBackgroundSyncing = true
+        defer { isBackgroundSyncing = false }
+
+        do {
+            let recent = try await fetchMessageSnapshot(targetCount: limit)
+            let existingIDs = Set(messages.map(\.id))
+            let newMessages = recent.filter { !existingIDs.contains($0.id) }
+
+            upsertMessages(recent)
+
+            let orderedNewMessages = newMessages.sorted { lhs, rhs in
+                if let lhsDate = lhs.date, let rhsDate = rhs.date, lhsDate != rhsDate {
+                    return lhsDate < rhsDate
+                }
+                return lhs.id < rhs.id
+            }
+            for message in orderedNewMessages {
+                NotificationService.shared.postNotification(for: message)
+            }
+        } catch {
+            if currentConnectionState != .connected {
+                lastConnectionErrorText = L10n.format("error.fetch_history_failed", error.localizedDescription)
+            }
         }
     }
 
@@ -243,23 +313,61 @@ final class MainViewModel: ObservableObject {
                     return date >= cutoffDate
                 }
             }
-            mergeMessages(collected)
+            replaceMessagesForSelectedApp(collected, appID: targetAppID, cutoffDate: cutoffDate)
             mergeApplicationsFromMessages()
         } catch {
-            lastConnectionErrorText = "拉取 90 天通知失败: \(error.localizedDescription)"
+            lastConnectionErrorText = L10n.format("error.fetch_90_days_failed", error.localizedDescription)
         }
     }
 
-    private func mergeMessages(_ incoming: [GotifyMessage]) {
-        guard !incoming.isEmpty else { return }
-        var mergedByID: [Int: GotifyMessage] = [:]
-        for item in messages {
-            mergedByID[item.id] = item
+    private func fetchMessageSnapshot(targetCount: Int) async throws -> [GotifyMessage] {
+        let desiredCount = max(1, targetCount)
+        var collected: [GotifyMessage] = []
+        var since: Int? = nil
+
+        while collected.count < desiredCount {
+            let remaining = desiredCount - collected.count
+            let page = try await apiService.fetchMessagesPage(
+                serverURL: serverURL,
+                token: clientToken,
+                limit: min(100, remaining),
+                since: since
+            )
+
+            if page.messages.isEmpty {
+                break
+            }
+
+            collected.append(contentsOf: page.messages)
+
+            guard let nextSince = page.nextSince, nextSince != since else {
+                break
+            }
+            since = nextSince
         }
-        for item in incoming {
-            mergedByID[item.id] = item
+
+        return Array(collected.prefix(desiredCount))
+    }
+
+    private func replaceMessages(with incoming: [GotifyMessage]) {
+        let unique = Dictionary(incoming.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
+        messages = unique.values.sorted(by: Self.sortMessages)
+    }
+
+    private func replaceMessagesForSelectedApp(_ incoming: [GotifyMessage], appID: Int, cutoffDate: Date?) {
+        let incomingIDs = Set(incoming.map(\.id))
+        let remainingMessages = messages.filter { item in
+            guard item.appID == appID else { return true }
+            guard let cutoffDate else { return false }
+            guard let date = item.date else { return false }
+            if date < cutoffDate {
+                return true
+            }
+            return incomingIDs.contains(item.id)
         }
-        messages = mergedByID.values.sorted(by: Self.sortMessages)
+
+        let uniqueIncoming = Dictionary(incoming.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
+        messages = (remainingMessages + uniqueIncoming.values).sorted(by: Self.sortMessages)
     }
 
     private func upsertMessage(_ message: GotifyMessage) {
@@ -269,6 +377,16 @@ final class MainViewModel: ObservableObject {
             messages.append(message)
         }
         messages.sort(by: Self.sortMessages)
+        mergeApplicationsFromMessages()
+    }
+
+    private func upsertMessages(_ incoming: [GotifyMessage]) {
+        guard !incoming.isEmpty else { return }
+        var mergedByID = Dictionary(uniqueKeysWithValues: messages.map { ($0.id, $0) })
+        for item in incoming {
+            mergedByID[item.id] = item
+        }
+        messages = mergedByID.values.sorted(by: Self.sortMessages)
         mergeApplicationsFromMessages()
     }
 
@@ -289,7 +407,7 @@ final class MainViewModel: ObservableObject {
         var known = Dictionary(uniqueKeysWithValues: applications.map { ($0.id, $0) })
         for appID in messages.compactMap(\.appID) {
             if known[appID] == nil {
-                known[appID] = GotifyApplication(id: appID, name: "App \(appID)", image: nil, description: nil)
+                known[appID] = GotifyApplication(id: appID, name: L10n.format("app.fallback_format", appID), image: nil, description: nil)
             }
         }
         applications = known.values.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
@@ -313,6 +431,7 @@ final class MainViewModel: ObservableObject {
     }
 
     private func handleConnectionState(_ state: GotifyWebSocketService.ConnectionState) {
+        currentConnectionState = state
         connectionStatusText = Self.statusText(for: state)
         if case .failed(let reason) = state {
             lastConnectionErrorText = reason
@@ -337,6 +456,44 @@ final class MainViewModel: ObservableObject {
         }
     }
 
+    private func startMaintenanceLoop() {
+        maintenanceTask?.cancel()
+        maintenanceTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 300_000_000_000)
+                guard !Task.isCancelled else { return }
+                await self.performMaintenanceTick()
+            }
+        }
+    }
+
+    private func performMaintenanceTick() async {
+        guard !serverURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !clientToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+
+        let needsReconnect = currentConnectionState != .connected || socketService.isLikelyStale(maxIdle: 90)
+        if needsReconnect {
+            connectIfPossible()
+            await syncRecentMessagesForReliability()
+        }
+    }
+
+    private func installWakeObserverIfNeeded() {
+        guard workspaceWakeObserver == nil else { return }
+        workspaceWakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            Task { @MainActor in
+                self.connectIfPossible()
+                await self.syncRecentMessagesForReliability()
+            }
+        }
+    }
+
     private func decodeIconImage(from data: Data) -> NSImage? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
             return NSImage(data: data)
@@ -358,13 +515,20 @@ final class MainViewModel: ObservableObject {
     private static func statusText(for state: GotifyWebSocketService.ConnectionState) -> String {
         switch state {
         case .idle:
-            return "未连接"
+            return L10n.text("connection.idle")
         case .connecting:
-            return "连接中..."
+            return L10n.text("connection.connecting")
         case .connected:
-            return "已连接"
+            return L10n.text("connection.connected")
         case .failed(let reason):
             return reason
+        }
+    }
+
+    deinit {
+        maintenanceTask?.cancel()
+        if let workspaceWakeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(workspaceWakeObserver)
         }
     }
 }

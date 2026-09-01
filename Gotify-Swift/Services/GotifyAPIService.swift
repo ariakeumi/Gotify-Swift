@@ -15,16 +15,16 @@ final class GotifyAPIService {
         var errorDescription: String? {
             switch self {
             case .invalidInput:
-                return "服务器地址或 Token 为空"
+                return L10n.text("api.invalid_input")
             case .invalidURL:
-                return "服务器地址格式不正确"
+                return L10n.text("api.invalid_url")
             case .invalidResponse:
-                return "服务器返回了无效响应"
+                return L10n.text("api.invalid_response")
             case .httpError(let statusCode, let details):
                 if details.isEmpty {
-                    return "HTTP \(statusCode)"
+                    return L10n.format("api.http_status", statusCode)
                 }
-                return "HTTP \(statusCode): \(details)"
+                return L10n.format("api.http_status_with_details", statusCode, details)
             }
         }
     }

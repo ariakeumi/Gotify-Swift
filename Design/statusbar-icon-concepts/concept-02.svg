@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18" color="black">
+<title>Ping Mail</title>
+<g fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="2.45" y="4.85" width="12.25" height="8.9" rx="1.75"/>
+  <path d="M3.15 5.8 L8.55 9.35 L13.95 5.8"/>
+  <path d="M3.2 13 L7.2 10.15"/>
+  <path d="M13.95 13 L10 10.15"/>
+  <path d="M11.1 3.95 C11.85 2.2 13.2 1.2 14.9 1.05"/>
+  <path d="M9.3 3.2 C10.25 .85 12.15 -.45 14.55 -.65" opacity=".9"/>
+</g>
+<circle cx="15.05" cy="3.75" r="1.25" fill="currentColor"/>
+</svg>

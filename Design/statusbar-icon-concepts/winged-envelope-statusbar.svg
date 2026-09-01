@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="144" height="144" viewBox="0 0 144 144" fill="none">
+  <!-- A deliberately simple mail mark for macOS's 18 pt menu bar slot. -->
+  <g stroke="#000" stroke-width="9" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Three feather strokes per side read as wings without making the silhouette heavy. -->
+    <path d="M41 59C28 42 16 36 8 38c4 11 12 20 27 27"/>
+    <path d="M39 71C24 60 13 58 6 62c7 9 17 14 30 15"/>
+    <path d="M42 83C29 78 20 79 14 85c9 6 18 8 29 5"/>
+    <path d="M103 59c13-17 25-23 33-21-4 11-12 20-27 27"/>
+    <path d="M105 71c15-11 26-13 33-9-7 9-17 14-30 15"/>
+    <path d="M102 83c13-5 22-4 28 2-9 6-18 8-29 5"/>
+    <!-- Envelope and flap. -->
+    <path d="M37 51h70v52H37z"/>
+    <path d="m38 53 34 28 34-28"/>
+    <path d="m38 101 25-24m43 24-25-24"/>
+  </g>
+</svg>

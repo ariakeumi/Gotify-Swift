@@ -4,11 +4,12 @@ import AppKit
 struct StatusBarPopoverView: View {
     @ObservedObject var viewModel: MainViewModel
     let onSelectMessage: (Int) -> Void
+    @State private var hoveringMessageIDs: Set<Int> = []
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Label("最近通知", systemImage: "bell.badge")
+                Label(L10n.text("statusbar.recent_notifications"), systemImage: "bell.badge")
                     .font(.title3.weight(.semibold))
                 Spacer()
                 Button {
@@ -18,44 +19,74 @@ struct StatusBarPopoverView: View {
                         .font(.title3)
                 }
                 .buttonStyle(.plain)
-                .help("退出 Gotify")
+                .help(L10n.text("statusbar.quit"))
             }
 
             if viewModel.recentStatusBarMessages.isEmpty {
-                Text("暂无通知")
+                Text(L10n.text("statusbar.no_notifications"))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .center)
                     .padding(.vertical, 12)
             } else {
                 ForEach(viewModel.recentStatusBarMessages) { item in
-                    Button {
-                        onSelectMessage(item.id)
-                    } label: {
-                        HStack(alignment: .top, spacing: 10) {
+                    HStack(alignment: .top, spacing: 10) {
+                        ZStack {
                             appIcon(for: item.appID)
                                 .onAppear {
                                     viewModel.loadIconIfNeeded(for: item.appID)
                                 }
 
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(item.title.isEmpty ? "(No Title)" : item.title)
-                                    .font(.body.weight(.semibold))
-                                    .lineLimit(1)
-                                Text(item.message)
-                                    .font(.subheadline)
-                                    .lineLimit(3)
-                                    .foregroundStyle(.secondary)
+                            Button(role: .destructive) {
+                                viewModel.deleteMessage(item)
+                            } label: {
+                                ZStack {
+                                    RoundedRectangle(cornerRadius: 6)
+                                        .fill(Color(nsColor: .controlBackgroundColor))
+                                    Image(systemName: "trash")
+                                        .font(.system(size: 12, weight: .semibold))
+                                        .foregroundStyle(.secondary)
+                                }
+                                .frame(width: 28, height: 28)
+                            }
+                            .buttonStyle(.plain)
+                            .opacity(hoveringMessageIDs.contains(item.id) ? 1 : 0)
+                            .allowsHitTesting(hoveringMessageIDs.contains(item.id))
+                        }
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
+                        .onHover { isHovering in
+                            if isHovering {
+                                hoveringMessageIDs.insert(item.id)
+                            } else {
+                                hoveringMessageIDs.remove(item.id)
                             }
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.vertical, 3)
+
+                        Button {
+                            onSelectMessage(item.id)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(item.title.isEmpty ? L10n.text("message.no_title") : item.title)
+                                    .font(.body.weight(.semibold))
+                                    .lineLimit(1)
+                                MarkdownMessageView(
+                                    message: item.message,
+                                    fontSize: 13,
+                                    lineLimit: 3,
+                                    showsImages: false
+                                )
+                                .foregroundStyle(.secondary)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
+                    .padding(.vertical, 2)
                 }
             }
         }
-        .padding(12)
-        .frame(width: 380)
+        .padding(10)
+        .frame(width: 340)
     }
 
     private func appIcon(for appID: Int?) -> some View {

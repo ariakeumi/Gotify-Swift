@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="144" height="144" viewBox="0 0 144 144" fill="none">
+  <!-- Minimal mascot mark: the reference's round head, oversized eye, and letter. -->
+  <defs>
+    <mask id="bird-mask">
+      <rect width="144" height="144" fill="white"/>
+      <!-- These cutouts retain detail while macOS tints the asset as one color. -->
+      <circle cx="78" cy="50" r="18" fill="black"/>
+      <rect x="37" y="72" width="96" height="57" rx="4" fill="black"/>
+    </mask>
+  </defs>
+  <g stroke="#000" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Soft head silhouette and small crest preserve the character without clutter. -->
+    <path d="M23 88c-7-24 5-52 28-65 24-14 56-5 68 19 8 16 4 35-8 46-14 12-33 15-51 12-18-2-31 1-37-12Z" fill="#000" mask="url(#bird-mask)"/>
+    <path d="M45 29 31 20l5-10c10 2 18 8 24 17" fill="none" stroke-width="8"/>
+    <path d="m111 59 11 5-10 7" fill="none" stroke-width="7"/>
+    <circle cx="80" cy="52" r="5" fill="#000" stroke="none"/>
+    <!-- Rounded envelope, deliberately larger than the face at menu-bar scale. -->
+    <path d="M37 73h97v55H37z" fill="none" stroke-width="8"/>
+    <path d="m38 75 48 37 47-37" fill="none" stroke-width="8"/>
+    <path d="m38 126 34-28m61 28-34-28" fill="none" stroke-width="8"/>
+  </g>
+</svg>

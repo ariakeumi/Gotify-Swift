@@ -1,0 +1,44 @@
+"app.name" = "Gotify";
+"app.unknown" = "未知应用";
+"app.fallback_format" = "App %d";
+
+"settings.server_url" = "服务器 URL";
+"settings.client_token" = "Client Token";
+"settings.font_size" = "字体大小";
+"settings.launch_at_login" = "开机自动启动";
+"settings.launch_at_login_error" = "自启动错误";
+"settings.connection_status" = "连接状态";
+"settings.recent_error" = "最近错误";
+"settings.save_and_reconnect" = "保存并重连";
+
+"connection.idle" = "未连接";
+"connection.connecting" = "连接中...";
+"connection.connected" = "已连接";
+
+"error.launch_at_login_failed" = "自启动设置失败: %@";
+"error.delete_message_failed" = "删除通知失败: %@";
+"error.fetch_history_failed" = "拉取历史消息失败: %@";
+"error.fetch_90_days_failed" = "拉取 90 天通知失败: %@";
+"error.connection_failed" = "连接失败: %@";
+
+"sidebar.all_notifications" = "全部通知";
+"sidebar.title" = "通知 App";
+
+"message.no_title" = "(无标题)";
+"message.expand" = "展开";
+"message.collapse" = "收起";
+
+"content.empty_title" = "暂无消息";
+"content.empty_description" = "应用已运行，收到 Gotify 推送后会显示在这里";
+
+"toolbar.refresh" = "刷新";
+
+"statusbar.recent_notifications" = "最近通知";
+"statusbar.quit" = "退出 Gotify";
+"statusbar.no_notifications" = "暂无通知";
+
+"api.invalid_input" = "服务器地址或 Token 为空";
+"api.invalid_url" = "服务器地址格式不正确";
+"api.invalid_response" = "服务器返回了无效响应";
+"api.http_status" = "HTTP %d";
+"api.http_status_with_details" = "HTTP %d: %@";

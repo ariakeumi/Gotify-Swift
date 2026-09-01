@@ -1,0 +1,44 @@
+"app.name" = "Gotify";
+"app.unknown" = "Unknown App";
+"app.fallback_format" = "App %d";
+
+"settings.server_url" = "Server URL";
+"settings.client_token" = "Client Token";
+"settings.font_size" = "Font Size";
+"settings.launch_at_login" = "Launch at Login";
+"settings.launch_at_login_error" = "Launch Error";
+"settings.connection_status" = "Connection Status";
+"settings.recent_error" = "Recent Error";
+"settings.save_and_reconnect" = "Save and Reconnect";
+
+"connection.idle" = "Disconnected";
+"connection.connecting" = "Connecting...";
+"connection.connected" = "Connected";
+
+"error.launch_at_login_failed" = "Failed to update launch at login: %@";
+"error.delete_message_failed" = "Failed to delete notification: %@";
+"error.fetch_history_failed" = "Failed to fetch message history: %@";
+"error.fetch_90_days_failed" = "Failed to fetch 90-day messages: %@";
+"error.connection_failed" = "Connection failed: %@";
+
+"sidebar.all_notifications" = "All Notifications";
+"sidebar.title" = "Notification Apps";
+
+"message.no_title" = "(No Title)";
+"message.expand" = "Expand";
+"message.collapse" = "Collapse";
+
+"content.empty_title" = "No Messages";
+"content.empty_description" = "The app is running. Incoming Gotify pushes will appear here.";
+
+"toolbar.refresh" = "Refresh";
+
+"statusbar.recent_notifications" = "Recent Notifications";
+"statusbar.quit" = "Quit Gotify";
+"statusbar.no_notifications" = "No Notifications";
+
+"api.invalid_input" = "Server URL or token is empty";
+"api.invalid_url" = "Server URL format is invalid";
+"api.invalid_response" = "The server returned an invalid response";
+"api.http_status" = "HTTP %d";
+"api.http_status_with_details" = "HTTP %d: %@";

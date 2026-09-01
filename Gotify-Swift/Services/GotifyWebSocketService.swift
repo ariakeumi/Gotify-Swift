@@ -15,10 +15,13 @@ final class GotifyWebSocketService {
     private var session: URLSession?
     private var isManuallyStopped = false
     private var reconnectWorkItem: DispatchWorkItem?
+    private var heartbeatWorkItem: DispatchWorkItem?
     private var latestServerURL: String = ""
     private var latestToken: String = ""
     private var activeConnectionID = UUID()
+    private var lastActivityAt: Date?
     private let decoder: JSONDecoder
+    private let heartbeatInterval: TimeInterval = 30
 
     var onMessage: MessageHandler?
     var onStateChange: StateHandler?
@@ -35,11 +38,11 @@ final class GotifyWebSocketService {
         let token = rawToken.trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard !serverURL.isEmpty, !token.isEmpty else {
-            publishState(.failed("服务器地址或 Token 为空"))
+            publishState(.failed(L10n.text("api.invalid_input")))
             return
         }
         guard let webSocketURL = makeWebSocketURL(serverURL: serverURL, token: token) else {
-            publishState(.failed("服务器地址格式不正确"))
+            publishState(.failed(L10n.text("api.invalid_url")))
             return
         }
 
@@ -54,23 +57,33 @@ final class GotifyWebSocketService {
         self.session = session
         self.task = task
         task.resume()
+        touchActivity()
         publishState(.connected)
 
         listen(connectionID: connectionID)
+        scheduleHeartbeat(connectionID: connectionID)
     }
 
     func disconnect(manual: Bool = true) {
         isManuallyStopped = manual
         reconnectWorkItem?.cancel()
         reconnectWorkItem = nil
+        heartbeatWorkItem?.cancel()
+        heartbeatWorkItem = nil
 
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
         session?.invalidateAndCancel()
         session = nil
+        lastActivityAt = nil
         if manual {
             publishState(.idle)
         }
+    }
+
+    func isLikelyStale(maxIdle: TimeInterval) -> Bool {
+        guard task != nil, let lastActivityAt else { return false }
+        return Date().timeIntervalSince(lastActivityAt) > maxIdle
     }
 
     private func makeWebSocketURL(serverURL: String, token: String) -> URL? {
@@ -103,9 +116,9 @@ final class GotifyWebSocketService {
 
             switch result {
             case .failure(let error):
-                self.publishState(.failed("连接失败: \(self.describe(error))"))
-                self.scheduleReconnectIfNeeded(connectionID: connectionID)
+                self.handleConnectionFailure(error, connectionID: connectionID)
             case .success(let message):
+                self.touchActivity()
                 self.handle(message)
                 self.listen(connectionID: connectionID)
             }
@@ -144,6 +157,47 @@ final class GotifyWebSocketService {
         }
         reconnectWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: workItem)
+    }
+
+    private func scheduleHeartbeat(connectionID: UUID) {
+        heartbeatWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            guard !self.isManuallyStopped else { return }
+            guard self.activeConnectionID == connectionID else { return }
+            guard let task = self.task else { return }
+
+            task.sendPing { [weak self] error in
+                guard let self else { return }
+                guard self.activeConnectionID == connectionID else { return }
+                if let error {
+                    self.handleConnectionFailure(error, connectionID: connectionID)
+                    return
+                }
+                self.touchActivity()
+                self.scheduleHeartbeat(connectionID: connectionID)
+            }
+        }
+        heartbeatWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + heartbeatInterval, execute: workItem)
+    }
+
+    private func handleConnectionFailure(_ error: Error, connectionID: UUID) {
+        guard activeConnectionID == connectionID else { return }
+        heartbeatWorkItem?.cancel()
+        heartbeatWorkItem = nil
+
+        task?.cancel(with: .goingAway, reason: nil)
+        task = nil
+        session?.invalidateAndCancel()
+        session = nil
+
+        publishState(.failed(L10n.format("error.connection_failed", describe(error))))
+        scheduleReconnectIfNeeded(connectionID: connectionID)
+    }
+
+    private func touchActivity() {
+        lastActivityAt = Date()
     }
 
     private func publishState(_ state: ConnectionState) {

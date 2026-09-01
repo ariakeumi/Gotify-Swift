@@ -14,7 +14,7 @@ struct ContentView: View {
         NavigationSplitView {
             List {
                 sidebarRow(
-                    title: "全部通知",
+                    title: L10n.text("sidebar.all_notifications"),
                     icon: "tray.full",
                     appID: MainViewModel.allAppsSelectionID
                 )
@@ -28,86 +28,34 @@ struct ContentView: View {
                     .onAppear { viewModel.loadIconIfNeeded(for: app.id) }
                 }
             }
-            .navigationTitle("通知 App")
+            .navigationTitle(L10n.text("sidebar.title"))
         } detail: {
             NavigationStack {
                 ScrollViewReader { proxy in
-                    List(viewModel.filteredMessages) { item in
-                        ZStack(alignment: .bottomTrailing) {
-                            HStack(alignment: .top, spacing: 10) {
-                                appIcon(for: item.appID)
-                                    .onAppear {
-                                        viewModel.loadIconIfNeeded(for: item.appID)
-                                    }
-
-                                VStack(alignment: .leading, spacing: 6) {
-                                    Text(item.title.isEmpty ? "(No Title)" : item.title)
-                                        .font(.system(size: titleFontSize, weight: .semibold))
-
-                                    Text(attributedMessage(item.message))
-                                        .font(.system(size: bodyFontSize))
-                                        .lineLimit(expandedMessageIDs.contains(item.id) ? nil : 6)
-
-                                    HStack(spacing: 8) {
-                                        Text(viewModel.appName(for: item.appID))
-                                        if let priority = item.priority {
-                                            Text("P\(priority)")
-                                        }
-                                        if let date = item.date {
-                                            Text(date.formatted(date: .abbreviated, time: .shortened))
-                                        }
-                                    }
-                                    .font(.system(size: captionFontSize))
-                                    .foregroundStyle(.secondary)
-
-                                    if shouldShowExpandButton(for: item.message) {
-                                        Button(expandedMessageIDs.contains(item.id) ? "收起" : "展开") {
-                                            toggleExpanded(item.id)
-                                        }
-                                        .buttonStyle(.link)
-                                        .font(.system(size: captionFontSize))
-                                    }
-                                }
-                            }
-                            .padding(.trailing, 44)
-
-                            Button(role: .destructive) {
-                                viewModel.deleteMessage(item)
-                            } label: {
-                                Image(systemName: "trash")
-                                    .font(.system(size: 14, weight: .semibold))
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.regular)
-                            .opacity(hoveringMessageIDs.contains(item.id) ? 1 : 0)
-                            .allowsHitTesting(hoveringMessageIDs.contains(item.id))
-                            .padding(.bottom, 2)
-                            .padding(.trailing, 2)
-                        }
-                        .id(item.id)
-                        .padding(.vertical, 4)
-                        .contentShape(Rectangle())
-                        .onTapGesture(count: 2) {
-                            toggleExpanded(item.id)
-                        }
-                        .onHover { isHovering in
-                            if isHovering {
-                                hoveringMessageIDs.insert(item.id)
-                            } else {
-                                hoveringMessageIDs.remove(item.id)
-                            }
-                        }
-                        .listRowBackground(
-                            highlightedMessageID == item.id ? Color.accentColor.opacity(0.14) : Color.clear
-                        )
-                    }
-                    .overlay {
+                    Group {
                         if viewModel.filteredMessages.isEmpty {
                             ContentUnavailableView(
-                                "暂无消息",
+                                L10n.text("content.empty_title"),
                                 systemImage: "bubble.left.and.bubble.right",
-                                description: Text("应用已运行，收到 Gotify 推送后会显示在这里")
+                                description: Text(L10n.text("content.empty_description"))
                             )
+                        } else {
+                            ScrollView {
+                                Group {
+                                    if viewModel.selectedAppID == MainViewModel.allAppsSelectionID {
+                                        LazyVStack(alignment: .leading, spacing: 0) {
+                                            messageRows
+                                        }
+                                    } else {
+                                        VStack(alignment: .leading, spacing: 0) {
+                                            messageRows
+                                        }
+                                    }
+                                }
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 10)
+                            }
+                            .id("message-scroll-\(viewModel.selectedAppID)")
                         }
                     }
                     .onAppear {
@@ -117,13 +65,13 @@ struct ContentView: View {
                         scrollToFocusedMessage(with: proxy)
                     }
                 }
-                .navigationTitle("Gotify")
+                .navigationTitle(L10n.text("app.name"))
                 .toolbar {
                     ToolbarItem(placement: .primaryAction) {
                         Button {
                             viewModel.refreshMessages()
                         } label: {
-                            Label("刷新", systemImage: "arrow.clockwise")
+                            Label(L10n.text("toolbar.refresh"), systemImage: "arrow.clockwise")
                         }
                         .keyboardShortcut("r", modifiers: .command)
                         .disabled(viewModel.isRefreshing)
@@ -170,6 +118,98 @@ struct ContentView: View {
         .buttonStyle(.plain)
     }
 
+    @ViewBuilder
+    private var messageRows: some View {
+        ForEach(viewModel.filteredMessages) { item in
+            messageRow(item)
+                .id(item.id)
+            Divider()
+                .opacity(item.id == viewModel.filteredMessages.last?.id ? 0 : 1)
+        }
+    }
+
+    private func messageRow(_ item: GotifyMessage) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            ZStack {
+                appIcon(for: item.appID)
+                    .onAppear {
+                        viewModel.loadIconIfNeeded(for: item.appID)
+                    }
+
+                Button(role: .destructive) {
+                    viewModel.deleteMessage(item)
+                } label: {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Color(nsColor: .controlBackgroundColor))
+                        Image(systemName: "trash")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(width: 34, height: 34)
+                }
+                .buttonStyle(.plain)
+                .controlSize(.regular)
+                .opacity(hoveringMessageIDs.contains(item.id) ? 1 : 0)
+                .allowsHitTesting(hoveringMessageIDs.contains(item.id))
+            }
+            .frame(width: 34, height: 34)
+            .contentShape(Rectangle())
+            .onHover { isHovering in
+                if isHovering {
+                    hoveringMessageIDs.insert(item.id)
+                } else {
+                    hoveringMessageIDs.remove(item.id)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(item.title.isEmpty ? L10n.text("message.no_title") : item.title)
+                    .font(.system(size: titleFontSize, weight: .semibold))
+
+                MarkdownMessageView(
+                    message: item.message,
+                    fontSize: bodyFontSize,
+                    lineLimit: expandedMessageIDs.contains(item.id) ? nil : 6,
+                    showsImages: true,
+                    imageMaxHeight: expandedMessageIDs.contains(item.id) ? 280 : 180
+                )
+                .id("markdown-\(item.id)-\(expandedMessageIDs.contains(item.id))")
+
+                HStack(spacing: 8) {
+                    Text(viewModel.appName(for: item.appID))
+                    if let priority = item.priority {
+                        Text("P\(priority)")
+                    }
+                    if let date = item.date {
+                        Text(date.formatted(date: .abbreviated, time: .shortened))
+                    }
+                }
+                .font(.system(size: captionFontSize))
+                .foregroundStyle(.secondary)
+
+                if shouldShowExpandButton(for: item.message) {
+                    Button(expandedMessageIDs.contains(item.id) ? L10n.text("message.collapse") : L10n.text("message.expand")) {
+                        toggleExpanded(item.id)
+                    }
+                    .buttonStyle(.link)
+                    .font(.system(size: captionFontSize))
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 8)
+        .padding(.horizontal, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(highlightedMessageID == item.id ? Color.accentColor.opacity(0.14) : Color.clear)
+        )
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2) {
+            toggleExpanded(item.id)
+        }
+    }
+
     private func appIcon(for appID: Int?) -> some View {
         Group {
             if let image = viewModel.icon(for: appID) {
@@ -208,34 +248,22 @@ struct ContentView: View {
     }
 
     private func toggleExpanded(_ messageID: Int) {
-        if expandedMessageIDs.contains(messageID) {
-            expandedMessageIDs.remove(messageID)
-        } else {
-            expandedMessageIDs.insert(messageID)
+        withAnimation(.easeInOut(duration: 0.18)) {
+            if expandedMessageIDs.contains(messageID) {
+                expandedMessageIDs.remove(messageID)
+            } else {
+                expandedMessageIDs.insert(messageID)
+            }
         }
-    }
-
-    private func attributedMessage(_ text: String) -> AttributedString {
-        var attributed = AttributedString(text)
-        guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else {
-            return attributed
-        }
-        let nsRange = NSRange(text.startIndex..<text.endIndex, in: text)
-        for match in detector.matches(in: text, options: [], range: nsRange) {
-            guard let url = match.url,
-                  let stringRange = Range(match.range, in: text),
-                  let lower = AttributedString.Index(stringRange.lowerBound, within: attributed),
-                  let upper = AttributedString.Index(stringRange.upperBound, within: attributed) else { continue }
-            attributed[lower..<upper].link = url
-        }
-        return attributed
     }
 
     private func scrollToFocusedMessage(with proxy: ScrollViewProxy) {
         guard let messageID = viewModel.focusedMessageID else { return }
+        guard viewModel.filteredMessages.contains(where: { $0.id == messageID }) else { return }
         withAnimation(.easeInOut(duration: 0.22)) {
             proxy.scrollTo(messageID, anchor: .center)
         }
+        viewModel.clearFocusedMessage(messageID)
         highlightedMessageID = messageID
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
             if highlightedMessageID == messageID {

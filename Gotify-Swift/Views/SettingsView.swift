@@ -5,13 +5,13 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            TextField("服务器 URL", text: $viewModel.serverURL)
+            TextField(L10n.text("settings.server_url"), text: $viewModel.serverURL)
                 .textFieldStyle(.roundedBorder)
 
-            SecureField("Client Token", text: $viewModel.clientToken)
+            SecureField(L10n.text("settings.client_token"), text: $viewModel.clientToken)
                 .textFieldStyle(.roundedBorder)
 
-            LabeledContent("字体大小") {
+            LabeledContent(L10n.text("settings.font_size")) {
                 HStack(spacing: 10) {
                     Slider(value: $viewModel.messageFontSize, in: 12...22, step: 1)
                         .frame(width: 180)
@@ -21,14 +21,30 @@ struct SettingsView: View {
                 }
             }
 
-            LabeledContent("连接状态") {
+            Toggle(
+                L10n.text("settings.launch_at_login"),
+                isOn: Binding(
+                    get: { viewModel.launchAtLoginEnabled },
+                    set: { viewModel.setLaunchAtLoginEnabled($0) }
+                )
+            )
+
+            if !viewModel.launchAtLoginErrorText.isEmpty {
+                LabeledContent(L10n.text("settings.launch_at_login_error")) {
+                    Text(viewModel.launchAtLoginErrorText)
+                        .foregroundStyle(.red)
+                        .multilineTextAlignment(.trailing)
+                }
+            }
+
+            LabeledContent(L10n.text("settings.connection_status")) {
                 Text(viewModel.connectionStatusText)
-                    .foregroundStyle(viewModel.connectionStatusText == "已连接" ? .green : .secondary)
+                    .foregroundStyle(viewModel.connectionStatusText == L10n.text("connection.connected") ? .green : .secondary)
                     .multilineTextAlignment(.trailing)
             }
 
             if !viewModel.lastConnectionErrorText.isEmpty {
-                LabeledContent("最近错误") {
+                LabeledContent(L10n.text("settings.recent_error")) {
                     Text(viewModel.lastConnectionErrorText)
                         .foregroundStyle(.red)
                         .multilineTextAlignment(.trailing)
@@ -37,7 +53,7 @@ struct SettingsView: View {
 
             HStack {
                 Spacer()
-                Button("保存并重连") {
+                Button(L10n.text("settings.save_and_reconnect")) {
                     viewModel.saveSettingsAndReconnect()
                 }
                 .keyboardShortcut(.defaultAction)

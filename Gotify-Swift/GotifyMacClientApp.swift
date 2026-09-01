@@ -4,36 +4,59 @@ import SwiftUI
 struct GotifyMacClientApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var viewModel = MainViewModel()
+    @State private var didBootstrap = false
 
     var body: some Scene {
-        Window("Gotify", id: "main") {
+        let _ = bootstrapIfNeeded()
+
+        Window(L10n.text("app.name"), id: "main") {
             ContentView(viewModel: viewModel)
-                .onAppear {
-                    appDelegate.configure(with: viewModel)
-                    viewModel.start()
-                }
-                .background(MainWindowMarker())
+                .background(MainWindowMarker(appDelegate: appDelegate))
                 .background(MainWindowOpenerBinder(appDelegate: appDelegate, viewModel: viewModel))
         }
 
         Settings {
             SettingsView(viewModel: viewModel)
-                .frame(width: 480, height: 220)
+                .frame(width: 480, height: 280)
+        }
+    }
+
+    private func bootstrapIfNeeded() {
+        guard !didBootstrap else { return }
+        DispatchQueue.main.async {
+            guard !didBootstrap else { return }
+            didBootstrap = true
+            appDelegate.configure(with: viewModel)
+            viewModel.start()
         }
     }
 }
 
 private struct MainWindowMarker: NSViewRepresentable {
+    let appDelegate: AppDelegate
+
     func makeNSView(context: Context) -> MarkerView {
-        MarkerView()
+        MarkerView(appDelegate: appDelegate)
     }
 
     func updateNSView(_ nsView: MarkerView, context: Context) {}
 
     final class MarkerView: NSView {
+        private let appDelegate: AppDelegate
+
+        init(appDelegate: AppDelegate) {
+            self.appDelegate = appDelegate
+            super.init(frame: .zero)
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) {
+            fatalError("init(coder:) has not been implemented")
+        }
+
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            window?.identifier = NSUserInterfaceItemIdentifier("main-window")
+            appDelegate.configureMainWindow(window)
         }
     }
 }

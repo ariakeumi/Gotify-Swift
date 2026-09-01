@@ -1,12 +1,8 @@
 import AppKit
 import SwiftUI
-import ServiceManagement
+import CoreServices
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private enum DefaultsKeys {
-        static let askedLaunchAtLogin = "gotify.askedLaunchAtLogin"
-    }
-
     private var statusItem: NSStatusItem?
     private let statusPopover = NSPopover()
     private weak var viewModel: MainViewModel?
@@ -15,6 +11,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var localDismissMonitor: Any?
     private var openMainWindowHandler: (() -> Void)?
     private var openMessageHandler: ((Int) -> Void)?
+    private var unreadCountObserver: NSObjectProtocol?
+    private var unreadBadgeView: NSView?
+    private let launchedAsLoginItem = AppDelegate.detectLaunchedAsLoginItem()
+    private var didSuppressInitialMainWindow = false
 
     func configure(with viewModel: MainViewModel) {
         self.viewModel = viewModel
@@ -39,9 +39,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NotificationService.shared.requestAuthorizationIfNeeded()
         setupStatusItem()
+        setupUnreadBadgeObserver()
         setupWindowObservers()
         updateActivationPolicyForWindows()
-        requestLaunchAtLoginIfNeeded()
+        NotificationService.shared.refreshUnreadCount()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -72,19 +73,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 )
             }
             statusPopover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            NotificationService.shared.clearDeliveredGotifyNotifications()
             installDismissMonitors()
         }
     }
 
     private func setupStatusItem() {
-        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        let statusImage = NSImage(systemSymbolName: "envelope.fill", accessibilityDescription: "Gotify Mail")
-        statusImage?.size = NSSize(width: 18, height: 18)
-        statusImage?.isTemplate = true
-        item.button?.image = statusImage
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        item.button?.image = makeBaseStatusImage()
+        item.button?.imagePosition = .imageOnly
         item.button?.action = #selector(onStatusItemClick(_:))
         item.button?.target = self
         statusItem = item
+        installUnreadBadgeViewIfNeeded()
+        updateUnreadBadgeVisibility(hasUnread: false)
 
         statusPopover.behavior = .transient
         statusPopover.animates = true
@@ -95,6 +97,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             name: NSPopover.didCloseNotification,
             object: statusPopover
         )
+    }
+
+    private func setupUnreadBadgeObserver() {
+        unreadCountObserver = NotificationCenter.default.addObserver(
+            forName: NotificationService.unreadCountDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            let unreadCount = notification.object as? Int ?? 0
+            self?.updateUnreadBadgeVisibility(hasUnread: unreadCount > 0)
+        }
     }
 
     @objc
@@ -136,36 +149,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if !hasVisibleNormalWindow {
             NSApp.hide(nil)
-        }
-    }
-
-    private func requestLaunchAtLoginIfNeeded() {
-        let defaults = UserDefaults.standard
-        guard !defaults.bool(forKey: DefaultsKeys.askedLaunchAtLogin) else { return }
-        defaults.set(true, forKey: DefaultsKeys.askedLaunchAtLogin)
-
-        let alert = NSAlert()
-        alert.messageText = "开机启动"
-        alert.informativeText = "是否允许 Gotify 在登录 macOS 后自动启动并后台运行？"
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "允许")
-        alert.addButton(withTitle: "暂不")
-
-        if alert.runModal() == .alertFirstButtonReturn {
-            enableLaunchAtLogin()
-        }
-    }
-
-    private func enableLaunchAtLogin() {
-        do {
-            try SMAppService.mainApp.register()
-        } catch {
-            let alert = NSAlert()
-            alert.messageText = "开机启动设置失败"
-            alert.informativeText = error.localizedDescription
-            alert.alertStyle = .warning
-            alert.addButton(withTitle: "确定")
-            alert.runModal()
         }
     }
 
@@ -252,10 +235,69 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func makeBaseStatusImage() -> NSImage? {
+        guard let image = NSImage(named: "StatusBarIcon") else { return nil }
+        let ratio = image.size.height / image.size.width
+        image.size = NSSize(width: 18, height: 18 * ratio)
+        image.isTemplate = true
+        image.accessibilityDescription = "Gotify"
+        return image
+    }
+
+    private func installUnreadBadgeViewIfNeeded() {
+        guard unreadBadgeView == nil, let button = statusItem?.button else { return }
+        let badgeView = NSView(frame: NSRect(x: 14, y: 14, width: 8, height: 8))
+        badgeView.wantsLayer = true
+        badgeView.layer?.backgroundColor = NSColor.systemRed.cgColor
+        badgeView.layer?.cornerRadius = 4
+        badgeView.layer?.borderWidth = 1
+        badgeView.layer?.borderColor = NSColor.white.cgColor
+        badgeView.isHidden = true
+        badgeView.translatesAutoresizingMaskIntoConstraints = false
+        button.addSubview(badgeView)
+        NSLayoutConstraint.activate([
+            badgeView.widthAnchor.constraint(equalToConstant: 8),
+            badgeView.heightAnchor.constraint(equalToConstant: 8),
+            badgeView.trailingAnchor.constraint(equalTo: button.trailingAnchor, constant: -3),
+            badgeView.topAnchor.constraint(equalTo: button.topAnchor, constant: 3)
+        ])
+        unreadBadgeView = badgeView
+    }
+
+    private func updateUnreadBadgeVisibility(hasUnread: Bool) {
+        if statusItem?.button?.image == nil {
+            statusItem?.button?.image = makeBaseStatusImage()
+        }
+        unreadBadgeView?.isHidden = !hasUnread
+    }
+
+    func configureMainWindow(_ window: NSWindow?) {
+        guard let window else { return }
+        window.identifier = NSUserInterfaceItemIdentifier("main-window")
+
+        guard launchedAsLoginItem, !didSuppressInitialMainWindow else { return }
+        didSuppressInitialMainWindow = true
+
+        DispatchQueue.main.async { [weak self, weak window] in
+            guard let self, let window else { return }
+            window.orderOut(nil)
+            window.close()
+            self.updateActivationPolicyForWindows()
+        }
+    }
+
+    private static func detectLaunchedAsLoginItem() -> Bool {
+        guard let event = NSAppleEventManager.shared().currentAppleEvent else { return false }
+        return event.paramDescriptor(forKeyword: AEKeyword(keyAELaunchedAsLogInItem)) != nil
+    }
+
     deinit {
         let center = NotificationCenter.default
         for observer in windowObservers {
             center.removeObserver(observer)
+        }
+        if let unreadCountObserver {
+            center.removeObserver(unreadCountObserver)
         }
         center.removeObserver(self, name: NSPopover.didCloseNotification, object: statusPopover)
         removeDismissMonitors()

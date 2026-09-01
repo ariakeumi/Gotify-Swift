@@ -4,6 +4,7 @@ import UserNotifications
 final class NotificationService {
     static let shared = NotificationService()
     private static let localNotificationPrefix = "gotify-"
+    static let unreadCountDidChangeNotification = Notification.Name("gotify.unreadCountDidChange")
 
     private let center = UNUserNotificationCenter.current()
 
@@ -28,7 +29,9 @@ final class NotificationService {
             trigger: nil
         )
 
-        center.add(request)
+        center.add(request) { [weak self] _ in
+            self?.refreshUnreadCount()
+        }
     }
 
     func clearDeliveredGotifyNotifications() {
@@ -37,8 +40,32 @@ final class NotificationService {
                 .map(\.request.identifier)
                 .filter { $0.hasPrefix(Self.localNotificationPrefix) }
 
-            guard !identifiers.isEmpty else { return }
+            guard !identifiers.isEmpty else {
+                self?.publishUnreadCount(0)
+                return
+            }
             self?.center.removeDeliveredNotifications(withIdentifiers: identifiers)
+            self?.publishUnreadCount(0)
+        }
+    }
+
+    func refreshUnreadCount() {
+        center.getDeliveredNotifications { notifications in
+            let unreadCount = notifications.reduce(into: 0) { partialResult, notification in
+                if notification.request.identifier.hasPrefix(Self.localNotificationPrefix) {
+                    partialResult += 1
+                }
+            }
+            self.publishUnreadCount(unreadCount)
+        }
+    }
+
+    private func publishUnreadCount(_ unreadCount: Int) {
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(
+                name: Self.unreadCountDidChangeNotification,
+                object: unreadCount
+            )
         }
     }
 }
