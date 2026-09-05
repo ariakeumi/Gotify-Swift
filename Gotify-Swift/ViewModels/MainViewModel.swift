@@ -22,6 +22,7 @@ final class MainViewModel: ObservableObject {
         }
     }
     @Published var focusedMessageID: Int?
+    @Published var searchText: String = ""
     @Published private(set) var connectionStatusText: String = L10n.text("connection.idle")
     @Published private(set) var lastConnectionErrorText: String = ""
     @Published private(set) var launchAtLoginErrorText: String = ""
@@ -107,15 +108,24 @@ final class MainViewModel: ObservableObject {
     }
 
     var filteredMessages: [GotifyMessage] {
+        var result: [GotifyMessage]
         if selectedAppID == Self.allAppsSelectionID {
-            return messages
+            result = messages
+        } else {
+            let cutoffDate = Calendar.current.date(byAdding: .day, value: -90, to: Date())
+            result = messages.filter { item in
+                guard item.appID == selectedAppID else { return false }
+                guard let cutoffDate else { return true }
+                guard let messageDate = item.date else { return false }
+                return messageDate >= cutoffDate
+            }
         }
-        let cutoffDate = Calendar.current.date(byAdding: .day, value: -90, to: Date())
-        return messages.filter { item in
-            guard item.appID == selectedAppID else { return false }
-            guard let cutoffDate else { return true }
-            guard let messageDate = item.date else { return false }
-            return messageDate >= cutoffDate
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return result }
+        return result.filter { item in
+            item.title.localizedCaseInsensitiveContains(query)
+                || item.message.localizedCaseInsensitiveContains(query)
+                || appName(for: item.appID).localizedCaseInsensitiveContains(query)
         }
     }
 

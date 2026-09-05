@@ -6,6 +6,7 @@ struct ContentView: View {
     @State private var expandedMessageIDs: Set<Int> = []
     @State private var hoveringMessageIDs: Set<Int> = []
     @State private var highlightedMessageID: Int?
+    @FocusState private var isSearchFieldFocused: Bool
     private var titleFontSize: Double { viewModel.messageFontSize + 2 }
     private var bodyFontSize: Double { viewModel.messageFontSize }
     private var captionFontSize: Double { max(11, viewModel.messageFontSize - 2) }
@@ -34,11 +35,15 @@ struct ContentView: View {
                 ScrollViewReader { proxy in
                     Group {
                         if viewModel.filteredMessages.isEmpty {
-                            ContentUnavailableView(
-                                L10n.text("content.empty_title"),
-                                systemImage: "bubble.left.and.bubble.right",
-                                description: Text(L10n.text("content.empty_description"))
-                            )
+                            if viewModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                ContentUnavailableView(
+                                    L10n.text("content.empty_title"),
+                                    systemImage: "bubble.left.and.bubble.right",
+                                    description: Text(L10n.text("content.empty_description"))
+                                )
+                            } else {
+                                ContentUnavailableView.search(text: viewModel.searchText)
+                            }
                         } else {
                             ScrollView {
                                 Group {
@@ -66,6 +71,12 @@ struct ContentView: View {
                     }
                 }
                 .navigationTitle(L10n.text("app.name"))
+                .searchable(
+                    text: $viewModel.searchText,
+                    placement: .toolbar,
+                    prompt: L10n.text("search.placeholder")
+                )
+                .searchFocused($isSearchFieldFocused)
                 .toolbar {
                     ToolbarItem(placement: .primaryAction) {
                         Button {
@@ -285,6 +296,11 @@ struct ContentView: View {
                 }
                 .keyboardShortcut(KeyEquivalent(Character("\(number)")), modifiers: .command)
             }
+
+            Button("") {
+                isSearchFieldFocused = true
+            }
+            .keyboardShortcut("f", modifiers: .command)
         }
         .frame(width: 0, height: 0)
         .opacity(0.001)
