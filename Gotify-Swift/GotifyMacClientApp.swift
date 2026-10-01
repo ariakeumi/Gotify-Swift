@@ -9,7 +9,8 @@ struct GotifyMacClientApp: App {
     var body: some Scene {
         let _ = bootstrapIfNeeded()
 
-        Window(L10n.text("app.name"), id: "main") {
+        // 空标题:避免窗口标题文本渲染进工具栏
+        Window("", id: "main") {
             ContentView(viewModel: viewModel)
                 .background(MainWindowMarker(appDelegate: appDelegate))
                 .background(MainWindowOpenerBinder(appDelegate: appDelegate, viewModel: viewModel))

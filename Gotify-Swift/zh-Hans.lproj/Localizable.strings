@@ -26,7 +26,7 @@
 "content.empty_description" = "应用已运行，收到 Gotify 推送后会显示在这里";
 "search.placeholder" = "搜索通知";
 "toolbar.refresh" = "刷新";
-"statusbar.recent_notifications" = "最近通知";
+"statusbar.open_main_window" = "打开主界面";
 "statusbar.quit" = "退出 Gotify";
 "statusbar.no_notifications" = "暂无通知";
 "api.invalid_input" = "服务器地址或 Token 为空";

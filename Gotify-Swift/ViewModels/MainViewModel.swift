@@ -9,6 +9,9 @@ import ServiceManagement
 final class MainViewModel: ObservableObject {
     static let allAppsSelectionID = -1
 
+    /// 驻留内存的消息历史上限;更早的内容不常驻,降低内存占用
+    private static let maxResidentMessages = 200
+
     @Published private(set) var messages: [GotifyMessage] = []
     @Published private(set) var applications: [GotifyApplication] = []
     @Published private(set) var appIcons: [Int: NSImage] = [:]
@@ -225,13 +228,13 @@ final class MainViewModel: ObservableObject {
         return status == .enabled || status == .requiresApproval
     }
 
-    private func refreshMessagesInternal(limit: Int = 100) async {
+    private func refreshMessagesInternal() async {
         if isRefreshing { return }
         isRefreshing = true
         defer { isRefreshing = false }
 
         do {
-            let recent = try await fetchMessageSnapshot(targetCount: max(limit, min(max(messages.count + 20, 100), 1000)))
+            let recent = try await fetchMessageSnapshot(targetCount: Self.maxResidentMessages)
             replaceMessages(with: recent)
             mergeApplicationsFromMessages()
         } catch {
@@ -246,31 +249,77 @@ final class MainViewModel: ObservableObject {
         }
     }
 
-    private func syncRecentMessagesForReliability(limit: Int = 100) async {
+    /// 后台可靠性同步:增量拉取本地没有的新消息(比全量拉 100 条省得多的解析与分配)。
+    /// 官方 since 语义:只返回比 since 更新(更高 ID)的消息。
+    private func syncRecentMessagesForReliability() async {
         if isRefreshing || isBackgroundSyncing { return }
         isBackgroundSyncing = true
         defer { isBackgroundSyncing = false }
 
         do {
-            let recent = try await fetchMessageSnapshot(targetCount: limit)
-            let existingIDs = Set(messages.map(\.id))
-            let newMessages = recent.filter { !existingIDs.contains($0.id) }
-
-            upsertMessages(recent)
-
-            let orderedNewMessages = newMessages.sorted { lhs, rhs in
-                if let lhsDate = lhs.date, let rhsDate = rhs.date, lhsDate != rhsDate {
-                    return lhsDate < rhsDate
-                }
-                return lhs.id < rhs.id
+            guard let newestKnown = messages.map(\.id).max() else {
+                let recent = try await fetchMessageSnapshot(targetCount: 100)
+                await ingestSyncedMessages(recent)
+                return
             }
-            for message in orderedNewMessages {
-                NotificationService.shared.postNotification(for: message)
+
+            var since = newestKnown
+            var fetched: [GotifyMessage] = []
+            var incrementalOK = false
+            var firstProbeEmpty = false
+
+            for attempt in 0..<3 {
+                let page = try await apiService.fetchMessagesPage(
+                    serverURL: serverURL,
+                    token: clientToken,
+                    limit: 100,
+                    since: since
+                )
+                if attempt == 0 && page.messages.isEmpty {
+                    // 没有比最新已知 ID 更新的消息 —— 增量路径,一次请求收工
+                    firstProbeEmpty = true
+                    break
+                }
+                let newer = page.messages.filter { $0.id > since }
+                guard !newer.isEmpty else { break }
+                incrementalOK = true
+                fetched.append(contentsOf: newer)
+                guard let pageMaxID = newer.map(\.id).max(), pageMaxID > since,
+                      page.messages.count >= 100 else { break }
+                since = pageMaxID
+            }
+
+            if incrementalOK {
+                await ingestSyncedMessages(fetched)
+            } else if firstProbeEmpty {
+                // 空闲周期:没有新消息,什么都不做
+            } else {
+                // 服务器把 since 当作分页游标(返回更旧消息)时走这里:
+                // 退回全量快照,保证 WS 断线期间漏掉的消息仍能补上
+                let recent = try await fetchMessageSnapshot(targetCount: 100)
+                await ingestSyncedMessages(recent)
             }
         } catch {
             if currentConnectionState != .connected {
                 lastConnectionErrorText = L10n.format("error.fetch_history_failed", error.localizedDescription)
             }
+        }
+    }
+
+    private func ingestSyncedMessages(_ recent: [GotifyMessage]) async {
+        let existingIDs = Set(messages.map(\.id))
+        let newMessages = recent.filter { !existingIDs.contains($0.id) }
+
+        upsertMessages(recent)
+
+        let orderedNewMessages = newMessages.sorted { lhs, rhs in
+            if let lhsDate = lhs.date, let rhsDate = rhs.date, lhsDate != rhsDate {
+                return lhsDate < rhsDate
+            }
+            return lhs.id < rhs.id
+        }
+        for message in orderedNewMessages {
+            NotificationService.shared.postNotification(for: message)
         }
     }
 
@@ -302,6 +351,12 @@ final class MainViewModel: ObservableObject {
 
                 let appMessages = page.messages.filter { $0.appID == targetAppID }
                 collected.append(contentsOf: appMessages)
+
+                // 驻留上限内收满即停,避免为凑满 90 天解析上千条
+                if collected.count >= Self.maxResidentMessages {
+                    collected.removeLast(collected.count - Self.maxResidentMessages)
+                    break
+                }
 
                 let reachedOlderThanCutoff: Bool = {
                     guard let cutoffDate else { return false }
@@ -378,6 +433,7 @@ final class MainViewModel: ObservableObject {
 
         let uniqueIncoming = Dictionary(incoming.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
         messages = (remainingMessages + uniqueIncoming.values).sorted(by: Self.sortMessages)
+        trimMessagesToResidentLimit()
     }
 
     private func upsertMessage(_ message: GotifyMessage) {
@@ -387,6 +443,7 @@ final class MainViewModel: ObservableObject {
             messages.append(message)
         }
         messages.sort(by: Self.sortMessages)
+        trimMessagesToResidentLimit()
         mergeApplicationsFromMessages()
     }
 
@@ -397,7 +454,14 @@ final class MainViewModel: ObservableObject {
             mergedByID[item.id] = item
         }
         messages = mergedByID.values.sorted(by: Self.sortMessages)
+        trimMessagesToResidentLimit()
         mergeApplicationsFromMessages()
+    }
+
+    /// 数组已按最新在前排序,直接丢弃超出驻留上限的旧消息
+    private func trimMessagesToResidentLimit() {
+        guard messages.count > Self.maxResidentMessages else { return }
+        messages.removeLast(messages.count - Self.maxResidentMessages)
     }
 
     private func mergeApplications(_ incoming: [GotifyApplication]) {

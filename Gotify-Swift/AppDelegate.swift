@@ -4,7 +4,23 @@ import CoreServices
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
-    private let statusPopover = NSPopover()
+    // 无边框、不抢焦点的下拉面板;相比 NSPopover 没有指向箭头。
+    private lazy var statusPanel: NSPanel = {
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 340, height: 80),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.level = .statusBar
+        panel.isMovable = false
+        panel.isReleasedWhenClosed = false
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        return panel
+    }()
     private weak var viewModel: MainViewModel?
     private var windowObservers: [NSObjectProtocol] = []
     private var globalDismissMonitor: Any?
@@ -12,20 +28,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var openMainWindowHandler: (() -> Void)?
     private var openMessageHandler: ((Int) -> Void)?
     private var unreadCountObserver: NSObjectProtocol?
-    private var unreadBadgeView: NSView?
+    private var hasUnreadNotifications = false
+    // 调试用:--preview-unread 强制保持未读态,不被真实未读数覆盖
+    private let forceUnreadPreview = ProcessInfo.processInfo.arguments.contains("--preview-unread")
+    private var unreadEyesOverlay: NSView?
+    private var statusRightClickMonitor: Any?
     private let launchedAsLoginItem = AppDelegate.detectLaunchedAsLoginItem()
     private var didSuppressInitialMainWindow = false
 
     func configure(with viewModel: MainViewModel) {
         self.viewModel = viewModel
-        statusPopover.contentViewController = NSHostingController(
-            rootView: StatusBarPopoverView(
-                viewModel: viewModel,
-                onSelectMessage: { [weak self] messageID in
-                    self?.openMessageFromStatusBar(messageID)
-                }
-            )
-        )
     }
 
     func setOpenMainWindowHandler(_ handler: @escaping () -> Void) {
@@ -58,24 +70,81 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         guard let button = statusItem?.button else { return }
-        if statusPopover.isShown {
-            statusPopover.performClose(sender)
-            removeDismissMonitors()
-        } else {
-            if let viewModel {
-                statusPopover.contentViewController = NSHostingController(
-                    rootView: StatusBarPopoverView(
-                        viewModel: viewModel,
-                        onSelectMessage: { [weak self] messageID in
-                            self?.openMessageFromStatusBar(messageID)
-                        }
-                    )
-                )
-            }
-            statusPopover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            NotificationService.shared.clearDeliveredGotifyNotifications()
-            installDismissMonitors()
+        if statusPanel.isVisible {
+            closeStatusPanel()
+        } else if let viewModel {
+            showStatusPanel(viewModel: viewModel)
         }
+    }
+
+    private func makeStatusContextMenu() -> NSMenu {
+        let menu = NSMenu()
+        let openItem = NSMenuItem(
+            title: L10n.text("statusbar.open_main_window"),
+            action: #selector(openMainWindowFromMenu),
+            keyEquivalent: ""
+        )
+        openItem.target = self
+        menu.addItem(openItem)
+
+        menu.addItem(.separator())
+
+        let quitItem = NSMenuItem(
+            title: L10n.text("statusbar.quit"),
+            action: #selector(quitFromMenu),
+            keyEquivalent: "q"
+        )
+        quitItem.target = self
+        menu.addItem(quitItem)
+        return menu
+    }
+
+    @objc private func openMainWindowFromMenu() {
+        openMainWindow()
+    }
+
+    @objc private func quitFromMenu() {
+        NSApp.terminate(nil)
+    }
+
+    private func makeStatusPanelContent(viewModel: MainViewModel) -> NSHostingController<StatusBarPopoverView> {
+        NSHostingController(
+            rootView: StatusBarPopoverView(
+                viewModel: viewModel,
+                onSelectMessage: { [weak self] messageID in
+                    self?.openMessageFromStatusBar(messageID)
+                }
+            )
+        )
+    }
+
+    private func showStatusPanel(viewModel: MainViewModel) {
+        let content = makeStatusPanelContent(viewModel: viewModel)
+        statusPanel.contentViewController = content
+        let contentSize = content.view.fittingSize
+        statusPanel.setContentSize(contentSize)
+
+        // 图标下方水平居中弹出;靠近屏幕边缘时收进可视区域内
+        if let button = statusItem?.button, let buttonWindow = button.window {
+            let buttonRect = buttonWindow.convertToScreen(button.convert(button.bounds, to: nil))
+            var topLeftX = buttonRect.midX - contentSize.width / 2
+            if let visibleFrame = buttonWindow.screen?.visibleFrame {
+                topLeftX = max(visibleFrame.minX + 8,
+                               min(topLeftX, visibleFrame.maxX - contentSize.width - 8))
+            }
+            statusPanel.setFrameTopLeftPoint(
+                NSPoint(x: topLeftX, y: buttonRect.minY - 8)
+            )
+        }
+
+        statusPanel.orderFront(nil)
+        NotificationService.shared.clearDeliveredGotifyNotifications()
+        installDismissMonitors()
+    }
+
+    private func closeStatusPanel() {
+        statusPanel.orderOut(nil)
+        removeDismissMonitors()
     }
 
     private func setupStatusItem() {
@@ -85,18 +154,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.button?.action = #selector(onStatusItemClick(_:))
         item.button?.target = self
         statusItem = item
-        installUnreadBadgeViewIfNeeded()
-        updateUnreadBadgeVisibility(hasUnread: false)
+        item.button?.menu = makeStatusContextMenu()   // 辅助功能(AXShowMenu)路径
+        installStatusRightClickMonitor()              // 真实右键 / 触控板双指点按
+        installUnreadEyesOverlayIfNeeded()
+        if ProcessInfo.processInfo.arguments.contains("--preview-unread") {
+            hasUnreadNotifications = true             // 调试用:直接以未读态启动
+            updateUnreadEyes()
+        }
+    }
 
-        statusPopover.behavior = .transient
-        statusPopover.animates = true
+    /// NSStatusBarButton 不会因 button.menu 在真实右键时弹菜单,
+    /// 所以在事件到达按钮前拦截 rightMouseDown(触控板双指点按即此事件)。
+    private func installStatusRightClickMonitor() {
+        guard statusRightClickMonitor == nil else { return }
+        statusRightClickMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.rightMouseDown, .leftMouseDown]
+        ) { [weak self] event in
+            guard let self,
+                  let button = self.statusItem?.button,
+                  event.window === button.window else { return event }
 
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(onPopoverDidClose(_:)),
-            name: NSPopover.didCloseNotification,
-            object: statusPopover
-        )
+            let isRightClick = event.type == .rightMouseDown
+                || (event.type == .leftMouseDown && event.modifierFlags.contains(.control))
+            if isRightClick {
+                self.showStatusContextMenu()
+                return nil   // 消费掉,避免再触发左键 action
+            }
+            return event
+        }
+    }
+
+    private func showStatusContextMenu() {
+        closeStatusPanel()
+
+        // 临时把 menu 挂到状态项上:此时点击按钮只弹菜单、不触发左键 action
+        statusItem?.menu = makeStatusContextMenu()
+        statusItem?.button?.performClick(nil)
+        statusItem?.menu = nil
     }
 
     private func setupUnreadBadgeObserver() {
@@ -106,13 +200,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             queue: .main
         ) { [weak self] notification in
             let unreadCount = notification.object as? Int ?? 0
-            self?.updateUnreadBadgeVisibility(hasUnread: unreadCount > 0)
+            guard let self, !self.forceUnreadPreview,
+                  self.hasUnreadNotifications != (unreadCount > 0) else { return }
+            self.hasUnreadNotifications = unreadCount > 0
+            self.updateUnreadEyes()
         }
-    }
-
-    @objc
-    private func onPopoverDidClose(_ notification: Notification) {
-        removeDismissMonitors()
     }
 
     private func setupWindowObservers() {
@@ -158,23 +250,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         globalDismissMonitor = NSEvent.addGlobalMonitorForEvents(
             matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
         ) { [weak self] _ in
-            self?.statusPopover.performClose(nil)
-            self?.removeDismissMonitors()
+            self?.closeStatusPanel()
         }
 
         localDismissMonitor = NSEvent.addLocalMonitorForEvents(
             matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
         ) { [weak self] event in
             guard let self else { return event }
-            guard self.statusPopover.isShown else { return event }
+            guard self.statusPanel.isVisible else { return event }
 
-            let popoverWindow = self.statusPopover.contentViewController?.view.window
             let statusButtonWindow = self.statusItem?.button?.window
             let clickedWindow = event.window
 
-            if clickedWindow !== popoverWindow && clickedWindow !== statusButtonWindow {
-                self.statusPopover.performClose(nil)
-                self.removeDismissMonitors()
+            if clickedWindow !== self.statusPanel && clickedWindow !== statusButtonWindow {
+                self.closeStatusPanel()
             }
             return event
         }
@@ -193,7 +282,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func openMainWindow(andThen completion: (() -> Void)? = nil) {
         removeDismissMonitors()
-        statusPopover.performClose(nil)
+        closeStatusPanel()
 
         _ = NSApp.setActivationPolicy(.regular)
 
@@ -244,31 +333,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return image
     }
 
-    private func installUnreadBadgeViewIfNeeded() {
-        guard unreadBadgeView == nil, let button = statusItem?.button else { return }
-        let badgeView = NSView(frame: NSRect(x: 14, y: 14, width: 8, height: 8))
-        badgeView.wantsLayer = true
-        badgeView.layer?.backgroundColor = NSColor.systemRed.cgColor
-        badgeView.layer?.cornerRadius = 4
-        badgeView.layer?.borderWidth = 1
-        badgeView.layer?.borderColor = NSColor.white.cgColor
-        badgeView.isHidden = true
-        badgeView.translatesAutoresizingMaskIntoConstraints = false
-        button.addSubview(badgeView)
+    /// 未读红眼:身体保持模板图(由系统按菜单栏实际着色渲染),
+    /// 在镂空眼睛的位置叠加一层红色圆点视图,未读时显示。
+    private func installUnreadEyesOverlayIfNeeded() {
+        guard unreadEyesOverlay == nil,
+              let button = statusItem?.button,
+              let imageSize = button.image?.size else { return }
+        let overlay = UnreadEyesOverlayView(frame: .zero)
+        overlay.translatesAutoresizingMaskIntoConstraints = false
+        button.addSubview(overlay)
+        // 图标在按钮内居中,overlay 覆盖图标区域即可对准镂空眼睛
         NSLayoutConstraint.activate([
-            badgeView.widthAnchor.constraint(equalToConstant: 8),
-            badgeView.heightAnchor.constraint(equalToConstant: 8),
-            badgeView.trailingAnchor.constraint(equalTo: button.trailingAnchor, constant: -3),
-            badgeView.topAnchor.constraint(equalTo: button.topAnchor, constant: 3)
+            overlay.widthAnchor.constraint(equalToConstant: imageSize.width),
+            overlay.heightAnchor.constraint(equalToConstant: imageSize.height),
+            overlay.centerXAnchor.constraint(equalTo: button.centerXAnchor),
+            overlay.centerYAnchor.constraint(equalTo: button.centerYAnchor),
         ])
-        unreadBadgeView = badgeView
+        overlay.isHidden = true
+        unreadEyesOverlay = overlay
     }
 
-    private func updateUnreadBadgeVisibility(hasUnread: Bool) {
-        if statusItem?.button?.image == nil {
-            statusItem?.button?.image = makeBaseStatusImage()
-        }
-        unreadBadgeView?.isHidden = !hasUnread
+    private func updateUnreadEyes() {
+        unreadEyesOverlay?.isHidden = !hasUnreadNotifications
     }
 
     func configureMainWindow(_ window: NSWindow?) {
@@ -299,7 +385,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let unreadCountObserver {
             center.removeObserver(unreadCountObserver)
         }
-        center.removeObserver(self, name: NSPopover.didCloseNotification, object: statusPopover)
+        if let statusRightClickMonitor {
+            NSEvent.removeMonitor(statusRightClickMonitor)
+        }
         removeDismissMonitors()
+    }
+}
+
+/// 未读红眼叠加层:覆盖在状态栏图标的图像区域上,
+/// 按方案 2 地鼠头像的眼睛占比画两个红色圆点。
+/// 坐标为图像宽高比例(眼睛中心 x=0.338/0.662,距顶 0.4575,半径 0.0926×宽),
+/// 圆点略大于镂空孔径以盖住抗锯齿边缘。
+private final class UnreadEyesOverlayView: NSView {
+    override func draw(_ dirtyRect: NSRect) {
+        guard bounds.width > 0, bounds.height > 0 else { return }
+        NSColor.systemRed.setFill()
+        let radius = 0.0926 * bounds.width * 1.18
+        for cx in [0.338, 0.662] {
+            let rect = NSRect(
+                x: cx * bounds.width - radius,
+                y: (1 - 0.4575) * bounds.height - radius,
+                width: radius * 2,
+                height: radius * 2
+            )
+            NSBezierPath(ovalIn: rect).fill()
+        }
     }
 }

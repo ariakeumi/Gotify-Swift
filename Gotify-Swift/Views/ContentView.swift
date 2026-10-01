@@ -45,21 +45,21 @@ struct ContentView: View {
                                 ContentUnavailableView.search(text: viewModel.searchText)
                             }
                         } else {
-                            ScrollView {
-                                Group {
-                                    if viewModel.selectedAppID == MainViewModel.allAppsSelectionID {
-                                        LazyVStack(alignment: .leading, spacing: 0) {
-                                            messageRows
-                                        }
-                                    } else {
-                                        VStack(alignment: .leading, spacing: 0) {
-                                            messageRows
-                                        }
-                                    }
+                            // List(AppKit 表格,真实单元格复用):只保留可见行,
+                            // 内存有界;布局精确,没有 LazyVStack 的高度估算空白问题。
+                            List {
+                                ForEach(viewModel.filteredMessages) { item in
+                                    messageRow(item, isLast: item.id == viewModel.filteredMessages.last?.id)
+                                        .id(item.id)
+                                        .listRowInsets(EdgeInsets())
+                                        .listRowBackground(Color.clear)
+                                        .listRowSeparator(.hidden)
                                 }
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 10)
                             }
+                            .listStyle(.plain)
+                            .scrollContentBackground(.hidden)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 10)
                             .id("message-scroll-\(viewModel.selectedAppID)")
                         }
                     }
@@ -70,7 +70,6 @@ struct ContentView: View {
                         scrollToFocusedMessage(with: proxy)
                     }
                 }
-                .navigationTitle(L10n.text("app.name"))
                 .searchable(
                     text: $viewModel.searchText,
                     placement: .toolbar,
@@ -129,17 +128,7 @@ struct ContentView: View {
         .buttonStyle(.plain)
     }
 
-    @ViewBuilder
-    private var messageRows: some View {
-        ForEach(viewModel.filteredMessages) { item in
-            messageRow(item)
-                .id(item.id)
-            Divider()
-                .opacity(item.id == viewModel.filteredMessages.last?.id ? 0 : 1)
-        }
-    }
-
-    private func messageRow(_ item: GotifyMessage) -> some View {
+    private func messageRow(_ item: GotifyMessage, isLast: Bool) -> some View {
         HStack(alignment: .top, spacing: 10) {
             ZStack {
                 appIcon(for: item.appID)
@@ -218,6 +207,10 @@ struct ContentView: View {
         .contentShape(Rectangle())
         .onTapGesture(count: 2) {
             toggleExpanded(item.id)
+        }
+        .overlay(alignment: .bottom) {
+            Divider()
+                .opacity(isLast ? 0 : 1)
         }
     }
 

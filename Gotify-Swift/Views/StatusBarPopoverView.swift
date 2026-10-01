@@ -8,20 +8,6 @@ struct StatusBarPopoverView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Label(L10n.text("statusbar.recent_notifications"), systemImage: "bell.badge")
-                    .font(.title3.weight(.semibold))
-                Spacer()
-                Button {
-                    NSApp.terminate(nil)
-                } label: {
-                    Image(systemName: "power")
-                        .font(.title3)
-                }
-                .buttonStyle(.plain)
-                .help(L10n.text("statusbar.quit"))
-            }
-
             if viewModel.recentStatusBarMessages.isEmpty {
                 Text(L10n.text("statusbar.no_notifications"))
                     .foregroundStyle(.secondary)
@@ -85,8 +71,13 @@ struct StatusBarPopoverView: View {
                 }
             }
         }
-        .padding(10)
+        .padding(12)
         .frame(width: 340)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.5), lineWidth: 0.5)
+        }
     }
 
     private func appIcon(for appID: Int?) -> some View {
