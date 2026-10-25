@@ -1,0 +1,15 @@
+# macOS
+.DS_Store
+
+# Xcode 构建产物(package.sh 会重新生成)
+build/
+DerivedData/
+*.dSYM
+*.dSYM.zip
+
+# Xcode 个人状态
+xcuserdata/
+*.xcuserstate
+
+# SwiftPM
+.build/
