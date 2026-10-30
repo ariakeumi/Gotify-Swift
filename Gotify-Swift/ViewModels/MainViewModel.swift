@@ -9,8 +9,8 @@ import ServiceManagement
 final class MainViewModel: ObservableObject {
     static let allAppsSelectionID = -1
 
-    /// 驻留内存的消息历史上限;更早的内容不常驻,降低内存占用
-    private static let maxResidentMessages = 200
+    private static let historyPageSize = 50
+    private static let statusBarMessageLimit = 8
 
     @Published private(set) var messages: [GotifyMessage] = []
     @Published private(set) var applications: [GotifyApplication] = []
@@ -29,12 +29,16 @@ final class MainViewModel: ObservableObject {
     @Published private(set) var connectionStatusText: String = L10n.text("connection.idle")
     @Published private(set) var lastConnectionErrorText: String = ""
     @Published private(set) var launchAtLoginErrorText: String = ""
+    @Published private(set) var isMainWindowOpen = false
     @Published private(set) var isRefreshing = false
+    @Published private(set) var isLoadingMore = false
+    @Published private(set) var hasMoreMessages = false
+    @Published private(set) var historyLoadError = false
     @Published private(set) var deletingMessageIDs: Set<Int> = []
 
     private let settings = AppSettings.shared
     private let socketService = GotifyWebSocketService()
-    private let apiService = GotifyAPIService()
+    private let apiService: GotifyAPIService
     private let iconCache = AppIconCache()
     private var loadingAppIconIDs: Set<Int> = []
     private var hasStarted = false
@@ -42,8 +46,13 @@ final class MainViewModel: ObservableObject {
     private var maintenanceTask: Task<Void, Never>?
     private var workspaceWakeObserver: NSObjectProtocol?
     private var isBackgroundSyncing = false
+    private var historyTask: Task<Void, Never>?
+    private var historyGeneration = UUID()
+    private var nextHistorySince: Int?
+    private var connectionGeneration = UUID()
 
-    init() {
+    init(apiService: GotifyAPIService = GotifyAPIService()) {
+        self.apiService = apiService
         serverURL = settings.serverURL
         clientToken = settings.clientToken
         launchAtLoginEnabled = Self.currentLaunchAtLoginEnabled()
@@ -77,9 +86,7 @@ final class MainViewModel: ObservableObject {
     func start() {
         guard !hasStarted else { return }
         hasStarted = true
-        Task {
-            await refreshMessagesInternal()
-        }
+        if historyTask == nil { refreshMessages() }
         connectIfPossible()
         startMaintenanceLoop()
         installWakeObserverIfNeeded()
@@ -88,26 +95,99 @@ final class MainViewModel: ObservableObject {
     func saveSettingsAndReconnect() {
         settings.serverURL = serverURL
         settings.clientToken = clientToken
+        connectionGeneration = UUID()
         selectedAppID = Self.allAppsSelectionID
+        messages = []
         applications = []
         appIcons.removeAll()
         loadingAppIconIDs.removeAll()
-        Task {
-            await refreshMessagesInternal()
-        }
+        refreshMessages()
         connectIfPossible()
     }
 
+    func mainWindowDidOpen() {
+        guard !isMainWindowOpen else { return }
+        isMainWindowOpen = true
+        refreshMessages()
+    }
+
+    func mainWindowWillClose() {
+        isMainWindowOpen = false
+        cancelHistoryLoading()
+        hasMoreMessages = false
+        nextHistorySince = nil
+        focusedMessageID = nil
+        searchText = ""
+        trimMessagesWhenWindowClosed()
+        // 启动后立即关窗时,首页请求可能尚未返回;仅补齐菜单栏的小快照。
+        if messages.isEmpty && hasStarted { refreshMessages() }
+    }
+
     func refreshMessages() {
-        Task {
-            await refreshMessagesInternal()
+        cancelHistoryLoading()
+        let generation = historyGeneration
+        let windowIsOpen = isMainWindowOpen
+        let targetAppID = selectedAppID
+        let newestKnownID = messages.map(\.id).max()
+        nextHistorySince = nil
+        hasMoreMessages = windowIsOpen
+        historyLoadError = false
+        // 保留菜单栏的最近消息,释放上一次浏览的历史。
+        messages = messages.prefix(Self.statusBarMessageLimit).map { $0 }
+        isRefreshing = true
+        historyTask = Task {
+            defer {
+                if historyGeneration == generation {
+                    isRefreshing = false
+                    historyTask = nil
+                }
+            }
+            if windowIsOpen {
+                await loadHistoryPage(generation: generation, appID: targetAppID)
+            } else {
+                do {
+                    let recent = try await fetchMessageSnapshot(targetCount: Self.statusBarMessageLimit)
+                    guard !Task.isCancelled, historyGeneration == generation else { return }
+                    replaceSnapshot(recent, preservingMessagesNewerThan: newestKnownID)
+                } catch {
+                    guard !Task.isCancelled, historyGeneration == generation else { return }
+                    lastConnectionErrorText = L10n.format("error.fetch_history_failed", error.localizedDescription)
+                }
+            }
+            guard !Task.isCancelled, historyGeneration == generation else { return }
+            do {
+                let apps = try await apiService.fetchApplications(serverURL: serverURL, token: clientToken)
+                guard !Task.isCancelled, historyGeneration == generation else { return }
+                mergeApplications(apps)
+            } catch {
+                // Some tokens cannot access /application; keep the message appid fallback.
+            }
         }
     }
 
-    func refreshMessagesForSelectedApp() {
-        Task {
-            await refreshSelectedAppMessagesForLast90Days()
+    func loadMoreMessages() {
+        guard isMainWindowOpen, hasMoreMessages, !isRefreshing, !isLoadingMore else { return }
+        let generation = historyGeneration
+        let appID = selectedAppID
+        isLoadingMore = true
+        historyLoadError = false
+        historyTask = Task {
+            defer {
+                if historyGeneration == generation {
+                    isLoadingMore = false
+                    historyTask = nil
+                }
+            }
+            await loadHistoryPage(generation: generation, appID: appID)
         }
+    }
+
+    private func cancelHistoryLoading() {
+        historyGeneration = UUID()
+        historyTask?.cancel()
+        historyTask = nil
+        isRefreshing = false
+        isLoadingMore = false
     }
 
     var filteredMessages: [GotifyMessage] {
@@ -133,15 +213,11 @@ final class MainViewModel: ObservableObject {
     }
 
     var recentStatusBarMessages: [GotifyMessage] {
-        Array(messages.prefix(8))
+        messages.prefix(Self.statusBarMessageLimit).map { $0 }
     }
 
     func didSelectSidebarApp() {
-        if selectedAppID != Self.allAppsSelectionID {
-            refreshMessagesForSelectedApp()
-        } else {
-            refreshMessages()
-        }
+        refreshMessages()
     }
 
     func selectSidebarApp(_ appID: Int) {
@@ -150,7 +226,10 @@ final class MainViewModel: ObservableObject {
     }
 
     func focusMessage(_ messageID: Int) {
-        selectedAppID = Self.allAppsSelectionID
+        if selectedAppID != Self.allAppsSelectionID {
+            selectedAppID = Self.allAppsSelectionID
+            refreshMessages()
+        }
         focusedMessageID = messageID
     }
 
@@ -206,16 +285,17 @@ final class MainViewModel: ObservableObject {
         guard !deletingMessageIDs.contains(message.id) else { return }
         guard let existingIndex = messages.firstIndex(where: { $0.id == message.id }) else { return }
         let removedMessage = messages.remove(at: existingIndex)
+        let connection = connectionGeneration
         deletingMessageIDs.insert(message.id)
         Task {
+            defer { deletingMessageIDs.remove(message.id) }
             do {
                 try await apiService.deleteMessage(serverURL: serverURL, token: clientToken, messageID: message.id)
             } catch {
-                messages.insert(removedMessage, at: min(existingIndex, messages.count))
-                messages.sort(by: Self.sortMessages)
+                guard connectionGeneration == connection else { return }
+                upsertMessage(removedMessage)
                 lastConnectionErrorText = L10n.format("error.delete_message_failed", error.localizedDescription)
             }
-            deletingMessageIDs.remove(message.id)
         }
     }
 
@@ -228,37 +308,18 @@ final class MainViewModel: ObservableObject {
         return status == .enabled || status == .requiresApproval
     }
 
-    private func refreshMessagesInternal() async {
-        if isRefreshing { return }
-        isRefreshing = true
-        defer { isRefreshing = false }
-
-        do {
-            let recent = try await fetchMessageSnapshot(targetCount: Self.maxResidentMessages)
-            replaceMessages(with: recent)
-            mergeApplicationsFromMessages()
-        } catch {
-            lastConnectionErrorText = L10n.format("error.fetch_history_failed", error.localizedDescription)
-        }
-
-        do {
-            let apps = try await apiService.fetchApplications(serverURL: serverURL, token: clientToken)
-            mergeApplications(apps)
-        } catch {
-            // Some tokens cannot access /application; keep sidebar from message appid fallback.
-        }
-    }
-
     /// 后台可靠性同步:增量拉取本地没有的新消息(比全量拉 100 条省得多的解析与分配)。
     /// 官方 since 语义:只返回比 since 更新(更高 ID)的消息。
     private func syncRecentMessagesForReliability() async {
         if isRefreshing || isBackgroundSyncing { return }
         isBackgroundSyncing = true
+        let connection = connectionGeneration
         defer { isBackgroundSyncing = false }
 
         do {
             guard let newestKnown = messages.map(\.id).max() else {
-                let recent = try await fetchMessageSnapshot(targetCount: 100)
+                let recent = try await fetchMessageSnapshot(targetCount: Self.statusBarMessageLimit)
+                guard !Task.isCancelled, connectionGeneration == connection else { return }
                 await ingestSyncedMessages(recent)
                 return
             }
@@ -275,6 +336,7 @@ final class MainViewModel: ObservableObject {
                     limit: 100,
                     since: since
                 )
+                guard !Task.isCancelled, connectionGeneration == connection else { return }
                 if attempt == 0 && page.messages.isEmpty {
                     // 没有比最新已知 ID 更新的消息 —— 增量路径,一次请求收工
                     firstProbeEmpty = true
@@ -297,6 +359,7 @@ final class MainViewModel: ObservableObject {
                 // 服务器把 since 当作分页游标(返回更旧消息)时走这里:
                 // 退回全量快照,保证 WS 断线期间漏掉的消息仍能补上
                 let recent = try await fetchMessageSnapshot(targetCount: 100)
+                guard !Task.isCancelled, connectionGeneration == connection else { return }
                 await ingestSyncedMessages(recent)
             }
         } catch {
@@ -307,10 +370,13 @@ final class MainViewModel: ObservableObject {
     }
 
     private func ingestSyncedMessages(_ recent: [GotifyMessage]) async {
-        let existingIDs = Set(messages.map(\.id))
-        let newMessages = recent.filter { !existingIDs.contains($0.id) }
+        let newestKnownID = messages.map(\.id).max()
+        // 分页历史不参与补发通知;快照只合并比最新已知 ID 更新的消息。
+        let newMessages = recent.filter { item in
+            newestKnownID.map { item.id > $0 } ?? true
+        }
 
-        upsertMessages(recent)
+        upsertMessages(newMessages)
 
         let orderedNewMessages = newMessages.sorted { lhs, rhs in
             if let lhsDate = lhs.date, let rhsDate = rhs.date, lhsDate != rhsDate {
@@ -323,65 +389,53 @@ final class MainViewModel: ObservableObject {
         }
     }
 
-    private func refreshSelectedAppMessagesForLast90Days() async {
-        guard selectedAppID != Self.allAppsSelectionID else {
-            await refreshMessagesInternal()
-            return
-        }
-        if isRefreshing { return }
-        isRefreshing = true
-        defer { isRefreshing = false }
-
-        let targetAppID = selectedAppID
-        let cutoffDate = Calendar.current.date(byAdding: .day, value: -90, to: Date())
-        var since: Int? = nil
+    private func loadHistoryPage(generation: UUID, appID: Int) async {
+        let cutoffDate = appID == Self.allAppsSelectionID ? nil
+            : Calendar.current.date(byAdding: .day, value: -90, to: Date())
+        let isFirstPage = nextHistorySince == nil
+        let newestKnownID = messages.map(\.id).max()
+        var cursor = nextHistorySince
         var collected: [GotifyMessage] = []
+        var canContinue = true
 
         do {
-            for _ in 0..<60 {
+            // 按应用筛选时,跳过其他应用的消息,最多收集一页匹配消息。
+            repeat {
+                try Task.checkCancellation()
                 let page = try await apiService.fetchMessagesPage(
                     serverURL: serverURL,
                     token: clientToken,
-                    limit: 100,
-                    since: since
+                    limit: Self.historyPageSize - collected.count,
+                    since: cursor
                 )
-                if page.messages.isEmpty {
-                    break
-                }
+                guard !Task.isCancelled, historyGeneration == generation, isMainWindowOpen else { return }
 
-                let appMessages = page.messages.filter { $0.appID == targetAppID }
-                collected.append(contentsOf: appMessages)
+                collected.append(contentsOf: page.messages.filter { item in
+                    guard appID != Self.allAppsSelectionID else { return true }
+                    guard item.appID == appID else { return false }
+                    guard let cutoffDate else { return true }
+                    return item.date.map { $0 >= cutoffDate } ?? false
+                })
+                let reachedCutoff = cutoffDate.map { cutoff in
+                    page.messages.compactMap(\.date).contains { $0 < cutoff }
+                } ?? false
+                canContinue = !page.messages.isEmpty && !reachedCutoff
+                    && page.nextSince != nil && page.nextSince != cursor
+                cursor = page.nextSince
+            } while canContinue && collected.count < Self.historyPageSize
 
-                // 驻留上限内收满即停,避免为凑满 90 天解析上千条
-                if collected.count >= Self.maxResidentMessages {
-                    collected.removeLast(collected.count - Self.maxResidentMessages)
-                    break
-                }
-
-                let reachedOlderThanCutoff: Bool = {
-                    guard let cutoffDate else { return false }
-                    let datedMessages = page.messages.compactMap(\.date)
-                    guard let oldest = datedMessages.min() else { return false }
-                    return oldest < cutoffDate
-                }()
-                if reachedOlderThanCutoff {
-                    break
-                }
-
-                guard let nextSince = page.nextSince, nextSince != since else { break }
-                since = nextSince
+            nextHistorySince = cursor
+            hasMoreMessages = canContinue
+            if isFirstPage && appID == Self.allAppsSelectionID {
+                replaceSnapshot(collected, preservingMessagesNewerThan: newestKnownID)
+            } else {
+                upsertMessages(collected)
             }
-
-            if let cutoffDate {
-                collected = collected.filter { msg in
-                    guard let date = msg.date else { return false }
-                    return date >= cutoffDate
-                }
-            }
-            replaceMessagesForSelectedApp(collected, appID: targetAppID, cutoffDate: cutoffDate)
-            mergeApplicationsFromMessages()
+            historyLoadError = false
         } catch {
-            lastConnectionErrorText = L10n.format("error.fetch_90_days_failed", error.localizedDescription)
+            guard !Task.isCancelled, historyGeneration == generation else { return }
+            historyLoadError = true
+            lastConnectionErrorText = L10n.format("error.fetch_history_failed", error.localizedDescription)
         }
     }
 
@@ -391,6 +445,7 @@ final class MainViewModel: ObservableObject {
         var since: Int? = nil
 
         while collected.count < desiredCount {
+            try Task.checkCancellation()
             let remaining = desiredCount - collected.count
             let page = try await apiService.fetchMessagesPage(
                 serverURL: serverURL,
@@ -414,26 +469,14 @@ final class MainViewModel: ObservableObject {
         return Array(collected.prefix(desiredCount))
     }
 
-    private func replaceMessages(with incoming: [GotifyMessage]) {
-        let unique = Dictionary(incoming.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
-        messages = unique.values.sorted(by: Self.sortMessages)
-    }
-
-    private func replaceMessagesForSelectedApp(_ incoming: [GotifyMessage], appID: Int, cutoffDate: Date?) {
-        let incomingIDs = Set(incoming.map(\.id))
-        let remainingMessages = messages.filter { item in
-            guard item.appID == appID else { return true }
-            guard let cutoffDate else { return false }
-            guard let date = item.date else { return false }
-            if date < cutoffDate {
-                return true
-            }
-            return incomingIDs.contains(item.id)
+    private func replaceSnapshot(_ incoming: [GotifyMessage], preservingMessagesNewerThan newestKnownID: Int?) {
+        let arrivedWhileLoading = messages.filter { item in
+            newestKnownID.map { item.id > $0 } ?? true
         }
-
-        let uniqueIncoming = Dictionary(incoming.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
-        messages = (remainingMessages + uniqueIncoming.values).sorted(by: Self.sortMessages)
-        trimMessagesToResidentLimit()
+        let unique = Dictionary((incoming + arrivedWhileLoading).map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
+        messages = unique.values.sorted(by: Self.sortMessages)
+        trimMessagesWhenWindowClosed()
+        mergeApplicationsFromMessages()
     }
 
     private func upsertMessage(_ message: GotifyMessage) {
@@ -443,7 +486,7 @@ final class MainViewModel: ObservableObject {
             messages.append(message)
         }
         messages.sort(by: Self.sortMessages)
-        trimMessagesToResidentLimit()
+        trimMessagesWhenWindowClosed()
         mergeApplicationsFromMessages()
     }
 
@@ -454,14 +497,14 @@ final class MainViewModel: ObservableObject {
             mergedByID[item.id] = item
         }
         messages = mergedByID.values.sorted(by: Self.sortMessages)
-        trimMessagesToResidentLimit()
+        trimMessagesWhenWindowClosed()
         mergeApplicationsFromMessages()
     }
 
-    /// 数组已按最新在前排序,直接丢弃超出驻留上限的旧消息
-    private func trimMessagesToResidentLimit() {
-        guard messages.count > Self.maxResidentMessages else { return }
-        messages.removeLast(messages.count - Self.maxResidentMessages)
+    /// 关闭主页后仅保留菜单栏需要的最近 8 条,重新打开时从第一页加载。
+    private func trimMessagesWhenWindowClosed() {
+        guard !isMainWindowOpen else { return }
+        messages = messages.prefix(Self.statusBarMessageLimit).map { $0 }
     }
 
     private func mergeApplications(_ incoming: [GotifyApplication]) {
@@ -601,6 +644,7 @@ final class MainViewModel: ObservableObject {
 
     deinit {
         maintenanceTask?.cancel()
+        historyTask?.cancel()
         if let workspaceWakeObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(workspaceWakeObserver)
         }

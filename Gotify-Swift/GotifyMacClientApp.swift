@@ -11,10 +11,19 @@ struct GotifyMacClientApp: App {
 
         // 空标题:避免窗口标题文本渲染进工具栏
         Window("", id: "main") {
-            ContentView(viewModel: viewModel)
-                .background(MainWindowMarker(appDelegate: appDelegate))
-                .background(MainWindowOpenerBinder(appDelegate: appDelegate, viewModel: viewModel))
+            Group {
+                if viewModel.isMainWindowOpen {
+                    ContentView(viewModel: viewModel)
+                } else {
+                    Color.clear
+                        .frame(minWidth: 640, minHeight: 560)
+                }
+            }
+            .background(MainWindowMarker(appDelegate: appDelegate))
+            .background(MainWindowOpenerBinder(appDelegate: appDelegate, viewModel: viewModel))
         }
+        .defaultSize(width: 860, height: 560)
+        .windowResizability(.contentMinSize)
 
         Settings {
             SettingsView(viewModel: viewModel)

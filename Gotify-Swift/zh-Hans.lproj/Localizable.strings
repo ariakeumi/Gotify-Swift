@@ -24,6 +24,8 @@
 "message.collapse" = "收起";
 "content.empty_title" = "暂无消息";
 "content.empty_description" = "应用已运行，收到 Gotify 推送后会显示在这里";
+"content.load_more" = "加载更多";
+"content.retry_loading" = "加载失败，点击重试";
 "search.placeholder" = "搜索通知";
 "toolbar.refresh" = "刷新";
 "statusbar.open_main_window" = "打开主界面";

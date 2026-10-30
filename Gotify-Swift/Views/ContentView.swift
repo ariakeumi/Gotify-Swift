@@ -7,6 +7,7 @@ struct ContentView: View {
     @State private var hoveringMessageIDs: Set<Int> = []
     @State private var highlightedMessageID: Int?
     @FocusState private var isSearchFieldFocused: Bool
+    private let floatingToolbarClearance: CGFloat = 52
     private var titleFontSize: Double { viewModel.messageFontSize + 2 }
     private var bodyFontSize: Double { viewModel.messageFontSize }
     private var captionFontSize: Double { max(11, viewModel.messageFontSize - 2) }
@@ -34,7 +35,7 @@ struct ContentView: View {
             NavigationStack {
                 ScrollViewReader { proxy in
                     Group {
-                        if viewModel.filteredMessages.isEmpty {
+                        if viewModel.filteredMessages.isEmpty && !viewModel.isRefreshing && !viewModel.hasMoreMessages {
                             if viewModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                                 ContentUnavailableView(
                                     L10n.text("content.empty_title"),
@@ -50,16 +51,49 @@ struct ContentView: View {
                             List {
                                 ForEach(viewModel.filteredMessages) { item in
                                     messageRow(item, isLast: item.id == viewModel.filteredMessages.last?.id)
+                                        .padding(.top, item.id == viewModel.filteredMessages.first?.id ? floatingToolbarClearance : 0)
                                         .id(item.id)
                                         .listRowInsets(EdgeInsets())
                                         .listRowBackground(Color.clear)
                                         .listRowSeparator(.hidden)
                                 }
+                                if viewModel.isRefreshing {
+                                    ProgressView()
+                                        .frame(maxWidth: .infinity)
+                                        .listRowSeparator(.hidden)
+                                } else if viewModel.hasMoreMessages {
+                                    Button {
+                                        viewModel.loadMoreMessages()
+                                    } label: {
+                                        HStack {
+                                            Spacer()
+                                            if viewModel.isLoadingMore {
+                                                ProgressView().controlSize(.small)
+                                            } else {
+                                                Text(L10n.text(viewModel.historyLoadError ? "content.retry_loading" : "content.load_more"))
+                                            }
+                                            Spacer()
+                                        }
+                                        .padding(.vertical, 8)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .disabled(viewModel.isLoadingMore)
+                                    .listRowSeparator(.hidden)
+                                    .id("load-more-\(viewModel.messages.count)")
+                                    .onScrollVisibilityChange(threshold: 0.1) { isVisible in
+                                        guard isVisible, !viewModel.historyLoadError,
+                                              viewModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+                                        viewModel.loadMoreMessages()
+                                    }
+                                }
                             }
                             .listStyle(.plain)
                             .scrollContentBackground(.hidden)
+                            .scrollEdgeEffectStyle(.soft, for: .top)
+                            .contentMargins(.top, 10, for: .scrollContent)
+                            .contentMargins(.bottom, 10, for: .scrollContent)
+                            .ignoresSafeArea(.container, edges: .top)
                             .padding(.horizontal, 16)
-                            .padding(.vertical, 10)
                             .id("message-scroll-\(viewModel.selectedAppID)")
                         }
                     }
@@ -67,6 +101,9 @@ struct ContentView: View {
                         scrollToFocusedMessage(with: proxy)
                     }
                     .onChange(of: viewModel.focusedMessageID) {
+                        scrollToFocusedMessage(with: proxy)
+                    }
+                    .onChange(of: viewModel.messages.count) {
                         scrollToFocusedMessage(with: proxy)
                     }
                 }
@@ -94,7 +131,8 @@ struct ContentView: View {
                 }
             }
         }
-        .frame(minWidth: 860, minHeight: 560)
+        .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
+        .frame(minWidth: 640, maxWidth: .infinity, minHeight: 560, maxHeight: .infinity)
         .background(sidebarShortcutBindings)
         .environment(\.openURL, OpenURLAction { url in
             NSWorkspace.shared.open(url)

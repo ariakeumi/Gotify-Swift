@@ -1,6 +1,12 @@
 import Foundation
 
 final class GotifyAPIService {
+    private let session: URLSession
+
+    init(session: URLSession = .shared) {
+        self.session = session
+    }
+
     struct MessagePage {
         let messages: [GotifyMessage]
         let nextSince: Int?
@@ -42,7 +48,7 @@ final class GotifyAPIService {
         ]
         guard let url = components?.url else { throw APIError.invalidURL }
 
-        let (data, response) = try await URLSession.shared.data(from: url)
+        let (data, response) = try await session.data(from: url)
         guard let http = response as? HTTPURLResponse else { throw APIError.invalidResponse }
         guard (200...299).contains(http.statusCode) else {
             let details = String(data: data, encoding: .utf8) ?? ""
@@ -76,7 +82,7 @@ final class GotifyAPIService {
         components?.queryItems = queryItems
         guard let url = components?.url else { throw APIError.invalidURL }
 
-        let (data, response) = try await URLSession.shared.data(from: url)
+        let (data, response) = try await session.data(from: url)
         guard let http = response as? HTTPURLResponse else { throw APIError.invalidResponse }
         guard (200...299).contains(http.statusCode) else {
             let details = String(data: data, encoding: .utf8) ?? ""
@@ -192,7 +198,7 @@ final class GotifyAPIService {
     private func request(url: URL, token: String) async throws -> (Data, URLResponse) {
         var request = URLRequest(url: url)
         request.setValue(token, forHTTPHeaderField: "X-Gotify-Key")
-        return try await URLSession.shared.data(for: request)
+        return try await session.data(for: request)
     }
 
     private func deleteRequest(url: URL, token: String, useHeader: Bool) async throws -> (Data, URLResponse) {
@@ -201,7 +207,7 @@ final class GotifyAPIService {
         if useHeader {
             request.setValue(token, forHTTPHeaderField: "X-Gotify-Key")
         }
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw APIError.invalidResponse }
         guard (200...299).contains(http.statusCode) else {
             let details = String(data: data, encoding: .utf8) ?? ""

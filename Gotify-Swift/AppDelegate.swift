@@ -38,6 +38,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func configure(with viewModel: MainViewModel) {
         self.viewModel = viewModel
+        if let window = mainWindow(), window.isVisible {
+            viewModel.mainWindowDidOpen()
+        }
     }
 
     func setOpenMainWindowHandler(_ handler: @escaping () -> Void) {
@@ -144,6 +147,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func closeStatusPanel() {
         statusPanel.orderOut(nil)
+        statusPanel.contentViewController = nil
         removeDismissMonitors()
     }
 
@@ -219,6 +223,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         windowObservers = names.map { name in
             center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
+                if let window = notification.object as? NSWindow,
+                   window.identifier?.rawValue == "main-window" {
+                    if notification.name == NSWindow.willCloseNotification {
+                        self?.viewModel?.mainWindowWillClose()
+                    } else if notification.name == NSWindow.didBecomeKeyNotification
+                                || notification.name == NSWindow.didBecomeMainNotification {
+                        self?.viewModel?.mainWindowDidOpen()
+                    }
+                }
                 DispatchQueue.main.async {
                     self?.clearNotificationsIfMainWindowForegrounded(notification)
                     self?.updateActivationPolicyForWindows()
