@@ -1,6 +1,6 @@
 # Gotify-Swift
 
-一个基于 SwiftUI 的 macOS Gotify 客户端，纯 Vide Coding。
+一个基于 SwiftUI 与 AppKit 的 macOS Gotify 客户端，纯 Vide Coding。
 支持实时接收消息、历史消息查看、侧边栏按应用筛选、状态栏通知面板等。
 
 ![macos-gotify](macos-gotify.png)
@@ -9,6 +9,7 @@
 
 - 实时 WebSocket 接收 Gotify 消息
 - 首次打开或手动刷新时最多加载最近 30 条历史消息，滚动到底部时每次再加载最多 30 条
+- 主界面通知列表使用 AppKit `NSTableView`，支持原生行复用、可变行高与 Markdown 内容展示
 - 侧边栏按通知应用（App）筛选
 - 状态栏图标与最近通知面板
 - 支持删除消息、展开长消息、URL 点击跳转默认浏览器
@@ -48,7 +49,7 @@
 
 ## 验证
 
-运行 `Tests/run-history-tests.sh` 验证分页、关闭窗口释放历史、重开、取消请求和失败重试。测试使用模拟网络响应，不访问实际 Gotify 服务。
+运行 `Tests/run-history-tests.sh` 验证分页、关闭窗口释放历史、重开、取消请求和失败重试。同时验证 AppKit 通知列表的 Markdown 文本、展开收起、行高、滚动位置、搜索和分页。测试使用模拟网络响应，不访问实际 Gotify 服务。
 
 ## License
 

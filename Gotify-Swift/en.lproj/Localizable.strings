@@ -20,6 +20,7 @@
 "sidebar.all_notifications" = "All Notifications";
 "sidebar.title" = "Notification Apps";
 "message.no_title" = "(No Title)";
+"message.delete" = "Delete message";
 "message.expand" = "Expand";
 "message.collapse" = "Collapse";
 "content.empty_title" = "No Messages";

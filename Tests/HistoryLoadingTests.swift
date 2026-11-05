@@ -8,14 +8,14 @@ private final class MockServer {
     private var nextStatus = 200
     private var nextDelay: TimeInterval = 0
 
-    func reset(count: Int = 75, oldMessageCount: Int = 0) {
+    func reset(count: Int = 75, oldMessageCount: Int = 0, messageText: String? = nil) {
         lock.lock()
         defer { lock.unlock() }
         let formatter = ISO8601DateFormatter()
         records = stride(from: count, through: 1, by: -1).map { id in
             let age: TimeInterval = id <= oldMessageCount ? 91 * 86_400 : Double(count - id)
             return ["id": id, "appid": id % 2 + 1, "title": "Message \(id)",
-                    "message": "Body \(id)", "date": formatter.string(from: Date().addingTimeInterval(-age))]
+                    "message": messageText ?? "Body \(id)", "date": formatter.string(from: Date().addingTimeInterval(-age))]
         }
         recordedQueries = []
         nextStatus = 200
@@ -213,5 +213,11 @@ private struct HistoryLoadingTests {
         precondition(!background.isMainWindowOpen && background.messages.count == 8)
         precondition(server.queries().first?["limit"] == "8")
         print("PASS: background refresh only requests and retains 8 messages")
+
+        server.reset(count: 90, messageText: "**Bold** [link](https://example.com) and text that wraps when the window gets narrower.\n" + Array(repeating: "A full line of notification text for native row sizing.", count: 12).joined(separator: "\n"))
+        let native = makeViewModel()
+        native.mainWindowDidOpen()
+        try await waitForIdle(native)
+        try await runNativeMessageListTests(native)
     }
 }

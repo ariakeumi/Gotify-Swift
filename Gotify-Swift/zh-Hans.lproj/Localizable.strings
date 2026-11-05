@@ -20,6 +20,7 @@
 "sidebar.all_notifications" = "全部通知";
 "sidebar.title" = "通知 App";
 "message.no_title" = "(无标题)";
+"message.delete" = "删除消息";
 "message.expand" = "展开";
 "message.collapse" = "收起";
 "content.empty_title" = "暂无消息";

@@ -8,7 +8,10 @@ xcrun swiftc -parse-as-library -target "$(uname -m)-apple-macosx26.2" \
     Gotify-Swift/Services/*.swift \
     Gotify-Swift/Localization.swift \
     Gotify-Swift/ViewModels/MainViewModel.swift \
+    Gotify-Swift/Views/MessageListView.swift \
+    Gotify-Swift/Views/MessageTableCellView.swift \
     Tests/HistoryLoadingTests.swift \
+    Tests/MessageListTests.swift \
     -o "$build_dir/history-tests"
 "$build_dir/history-tests"
 xcrun swiftc -parse-as-library -target "$(uname -m)-apple-macosx26.2" \
