@@ -11,16 +11,7 @@ struct GotifyMacClientApp: App {
 
         // 空标题:避免窗口标题文本渲染进工具栏
         Window("", id: "main") {
-            Group {
-                if viewModel.isMainWindowOpen {
-                    ContentView(viewModel: viewModel)
-                } else {
-                    Color.clear
-                        .frame(minWidth: 640, minHeight: 560)
-                }
-            }
-            .background(MainWindowMarker(appDelegate: appDelegate))
-            .background(MainWindowOpenerBinder(appDelegate: appDelegate, viewModel: viewModel))
+            MainWindowContent(viewModel: viewModel, appDelegate: appDelegate)
         }
         .defaultSize(width: 860, height: 560)
         .windowResizability(.contentMinSize)
@@ -39,6 +30,31 @@ struct GotifyMacClientApp: App {
             appDelegate.configure(with: viewModel)
             viewModel.start()
         }
+    }
+}
+
+// Observe visibility inside the window's View hierarchy. Observing only in App
+// can leave the initial placeholder on screen until the window is recreated.
+private struct MainWindowContent: View {
+    @ObservedObject var viewModel: MainViewModel
+    let appDelegate: AppDelegate
+
+    var body: some View {
+        Group {
+            if viewModel.isMainWindowOpen {
+                ContentView(viewModel: viewModel)
+            } else {
+                Color.clear
+                    .frame(minWidth: 640, minHeight: 560)
+            }
+        }
+        .onAppear {
+            // The first key-window event can arrive before AppDelegate installs
+            // its observers. The visible content must also initialize the state.
+            viewModel.mainWindowDidOpen()
+        }
+        .background(MainWindowMarker(appDelegate: appDelegate))
+        .background(MainWindowOpenerBinder(appDelegate: appDelegate, viewModel: viewModel))
     }
 }
 

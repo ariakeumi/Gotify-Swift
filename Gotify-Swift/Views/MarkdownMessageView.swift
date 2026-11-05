@@ -1,4 +1,5 @@
 import SwiftUI
+import ImageIO
 
 struct MarkdownMessageView: View {
     let message: String
@@ -6,51 +7,57 @@ struct MarkdownMessageView: View {
     var lineLimit: Int?
     var showsImages: Bool = true
     var imageMaxHeight: CGFloat = 220
+    var preparedContent: MarkdownContent?
+
+    private struct ParseRequest: Equatable {
+        let message: String
+        let lineLimit: Int?
+    }
+
+    @State private var parsedContent: MarkdownContent?
+    @State private var parsedRequest: ParseRequest?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ForEach(Array(parsedBlocks.enumerated()), id: \.offset) { _, block in
-                switch block {
-                case .text(let source):
-                    if let attributed = attributedMarkdown(from: source) {
-                        markdownText(attributed)
-                    }
-                case .image(let url, let altText):
-                    if showsImages {
-                        Link(destination: url) {
-                            AsyncImage(url: url, transaction: Transaction(animation: .easeInOut(duration: 0.2))) { phase in
-                                switch phase {
-                                case .empty:
-                                    placeholderImage(iconName: "photo")
-                                case .success(let image):
-                                    image
-                                        .resizable()
-                                        .scaledToFit()
-                                        .frame(maxWidth: .infinity, maxHeight: imageMaxHeight, alignment: .leading)
-                                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                                case .failure:
-                                    placeholderImage(iconName: "photo.slash", caption: altText)
-                                @unknown default:
-                                    placeholderImage(iconName: "photo")
+        let request = ParseRequest(message: message, lineLimit: lineLimit)
+        let content = preparedContent ?? (parsedRequest == request ? parsedContent : nil)
+        Group {
+            if let content {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(content.blocks.indices, id: \.self) { index in
+                        switch content.blocks[index] {
+                        case .text(let attributed):
+                            markdownText(attributed)
+                        case .image(let url, let altText):
+                            if showsImages {
+                                Link(destination: url) {
+                                    MarkdownImagePreview(url: url, altText: altText, fontSize: fontSize, height: imageMaxHeight)
+                                        .id(url)
                                 }
+                                .buttonStyle(.plain)
                             }
                         }
-                        .buttonStyle(.plain)
                     }
                 }
+            } else {
+                // Live messages and expanded text are parsed off the UI executor too.
+                // Keep the temporary text bounded while the result is being prepared.
+                Text(verbatim: MarkdownContent.previewSource(message, maxLines: lineLimit ?? MarkdownContent.previewLineLimit).text)
+                    .font(.system(size: fontSize))
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private var parsedBlocks: [MarkdownBlock] {
-        MarkdownParser.blocks(from: displayMessage)
-    }
-
-    private var displayMessage: String {
-        let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let lineLimit else { return trimmed }
-        return Self.prefix(trimmed, maxLines: lineLimit)
+        .task(id: preparedContent == nil ? request : nil) {
+            guard preparedContent == nil,
+                  parsedRequest != request else { return }
+            do {
+                let content = try await MarkdownContent.prepare(message: request.message, lineLimit: request.lineLimit)
+                try Task.checkCancellation()
+                parsedContent = content
+                parsedRequest = request
+            } catch {
+                // A disappearing row or a changed message cancels obsolete work.
+            }
+        }
     }
 
     @ViewBuilder
@@ -61,51 +68,87 @@ struct MarkdownMessageView: View {
             .fixedSize(horizontal: false, vertical: true)
             .textSelection(.enabled)
     }
+}
 
-    private func attributedMarkdown(from source: String) -> AttributedString? {
-        guard !source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+private struct MarkdownImagePreview: View {
+    let url: URL
+    let altText: String
+    let fontSize: Double
+    let height: CGFloat
 
-        let parsed = (try? AttributedString(
-            markdown: source,
-            options: AttributedString.MarkdownParsingOptions(
-                interpretedSyntax: .inlineOnlyPreservingWhitespace,
-                failurePolicy: .returnPartiallyParsedIfPossible
-            )
-        )) ?? AttributedString(source)
+    @State private var phase: AsyncImagePhase = .empty
 
-        return applyingDetectedLinks(to: parsed, source: source)
+    var body: some View {
+        Group {
+            switch phase {
+            case .empty:
+                placeholderImage(iconName: "photo")
+            case .success(let image):
+                image
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: .infinity, maxHeight: height, alignment: .leading)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+            case .failure:
+                placeholderImage(iconName: "photo.slash", caption: altText)
+            @unknown default:
+                placeholderImage(iconName: "photo")
+            }
+        }
+        // Loading or failing an image must not resize its row while scrolling.
+        .frame(height: height)
+        .task {
+            guard case .empty = phase else { return }
+            do {
+                let preview = try await Self.downloadPreview(from: url)
+                try Task.checkCancellation()
+                switch preview {
+                case .thumbnail(let bitmap):
+                    phase = .success(Image(decorative: bitmap, scale: 1))
+                case .original(let data):
+                    guard let image = NSImage(data: data) else { throw URLError(.cannotDecodeContentData) }
+                    phase = .success(Image(nsImage: image))
+                }
+            } catch {
+                if !Task.isCancelled {
+                    phase = .failure(error)
+                }
+            }
+        }
     }
 
-    private static func prefix(_ source: String, maxLines: Int) -> String {
-        guard maxLines > 0 else { return "" }
-        var lines = source.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
-        guard lines.count > maxLines else { return source }
-        lines = Array(lines.prefix(maxLines))
-        return lines.map(String.init).joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    private enum DownloadedPreview: Sendable {
+        case thumbnail(CGImage)
+        case original(Data)
     }
 
-    private func applyingDetectedLinks(to attributed: AttributedString, source: String) -> AttributedString {
-        var attributed = attributed
-        guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else {
-            return attributed
+    @concurrent
+    private static func downloadPreview(from url: URL) async throws -> DownloadedPreview {
+        let (data, response) = try await URLSession.shared.data(from: url)
+        try Task.checkCancellation()
+        guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode) else {
+            throw URLError(.badServerResponse)
         }
 
-        let nsRange = NSRange(source.startIndex..<source.endIndex, in: source)
-        for match in detector.matches(in: source, options: [], range: nsRange) {
-            guard let url = match.url,
-                  let stringRange = Range(match.range, in: source),
-                  let lower = AttributedString.Index(stringRange.lowerBound, within: attributed),
-                  let upper = AttributedString.Index(stringRange.upperBound, within: attributed) else { continue }
-            attributed[lower..<upper].link = url
+        let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
+        let thumbnailOptions: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: 1536
+        ]
+        if let source = CGImageSourceCreateWithData(data as CFData, sourceOptions),
+           let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions as CFDictionary) {
+            return .thumbnail(thumbnail)
         }
-        return attributed
+        return .original(data)
     }
 
     @ViewBuilder
     private func placeholderImage(iconName: String, caption: String? = nil) -> some View {
         RoundedRectangle(cornerRadius: 10)
             .fill(Color.gray.opacity(0.12))
-            .frame(maxWidth: .infinity, minHeight: 90, maxHeight: imageMaxHeight, alignment: .leading)
+            .frame(maxWidth: .infinity)
             .overlay {
                 VStack(spacing: 6) {
                     Image(systemName: iconName)
@@ -122,65 +165,5 @@ struct MarkdownMessageView: View {
                 }
                 .padding(10)
             }
-    }
-}
-
-private enum MarkdownBlock {
-    case text(String)
-    case image(URL, altText: String)
-}
-
-private enum MarkdownParser {
-    private static let imageRegex: NSRegularExpression = {
-        try! NSRegularExpression(pattern: #"!\[([^\]]*)\]\(([^)]+)\)"#)
-    }()
-
-    static func blocks(from message: String) -> [MarkdownBlock] {
-        let fullRange = NSRange(message.startIndex..<message.endIndex, in: message)
-        let matches = imageRegex.matches(in: message, options: [], range: fullRange)
-        guard !matches.isEmpty else { return [.text(message)] }
-
-        var blocks: [MarkdownBlock] = []
-        var currentIndex = message.startIndex
-
-        for match in matches {
-            guard let matchRange = Range(match.range, in: message) else { continue }
-            if currentIndex < matchRange.lowerBound {
-                appendTextBlock(String(message[currentIndex..<matchRange.lowerBound]), to: &blocks)
-            }
-
-            let altText = Range(match.range(at: 1), in: message).map { String(message[$0]) } ?? ""
-            let rawTarget = Range(match.range(at: 2), in: message).map { String(message[$0]) } ?? ""
-
-            if let url = makeImageURL(from: rawTarget) {
-                blocks.append(.image(url, altText: altText))
-            } else {
-                appendTextBlock(String(message[matchRange]), to: &blocks)
-            }
-
-            currentIndex = matchRange.upperBound
-        }
-
-        if currentIndex < message.endIndex {
-            appendTextBlock(String(message[currentIndex...]), to: &blocks)
-        }
-
-        return blocks.isEmpty ? [.text(message)] : blocks
-    }
-
-    private static func appendTextBlock(_ text: String, to blocks: inout [MarkdownBlock]) {
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        blocks.append(.text(text))
-    }
-
-    private static func makeImageURL(from rawTarget: String) -> URL? {
-        let trimmed = rawTarget.trimmingCharacters(in: .whitespacesAndNewlines)
-        let candidate = trimmed.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true).first.map(String.init) ?? trimmed
-        guard let url = URL(string: candidate),
-              let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https" else {
-            return nil
-        }
-        return url
     }
 }

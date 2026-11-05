@@ -11,3 +11,8 @@ xcrun swiftc -parse-as-library -target "$(uname -m)-apple-macosx26.2" \
     Tests/HistoryLoadingTests.swift \
     -o "$build_dir/history-tests"
 "$build_dir/history-tests"
+xcrun swiftc -parse-as-library -target "$(uname -m)-apple-macosx26.2" \
+    Gotify-Swift/Models/MarkdownContent.swift \
+    Tests/MarkdownContentTests.swift \
+    -o "$build_dir/markdown-tests"
+"$build_dir/markdown-tests"

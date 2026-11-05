@@ -7,6 +7,7 @@ struct GotifyMessage: Identifiable, Decodable {
     let message: String
     let priority: Int?
     let date: Date?
+    var markdownPreview: MarkdownContent?
 
     private enum CodingKeys: String, CodingKey {
         case id

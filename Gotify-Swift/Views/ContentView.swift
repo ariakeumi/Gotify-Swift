@@ -4,10 +4,10 @@ import AppKit
 struct ContentView: View {
     @ObservedObject var viewModel: MainViewModel
     @State private var expandedMessageIDs: Set<Int> = []
-    @State private var hoveringMessageIDs: Set<Int> = []
     @State private var highlightedMessageID: Int?
     @FocusState private var isSearchFieldFocused: Bool
     private let floatingToolbarClearance: CGFloat = 52
+    private let historyPrefetchRowCount = 10
     private var titleFontSize: Double { viewModel.messageFontSize + 2 }
     private var bodyFontSize: Double { viewModel.messageFontSize }
     private var captionFontSize: Double { max(11, viewModel.messageFontSize - 2) }
@@ -34,8 +34,12 @@ struct ContentView: View {
         } detail: {
             NavigationStack {
                 ScrollViewReader { proxy in
+                    let messages = viewModel.filteredMessages
+                    let lastMessageID = messages.last?.id
+                    let prefetchMessageID = viewModel.hasMoreMessages && !viewModel.isRefreshing && messages.count >= historyPrefetchRowCount
+                        ? messages[messages.count - historyPrefetchRowCount].id : nil
                     Group {
-                        if viewModel.filteredMessages.isEmpty && !viewModel.isRefreshing && !viewModel.hasMoreMessages {
+                        if messages.isEmpty && !viewModel.isRefreshing && !viewModel.hasMoreMessages {
                             if viewModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                                 ContentUnavailableView(
                                     L10n.text("content.empty_title"),
@@ -46,54 +50,53 @@ struct ContentView: View {
                                 ContentUnavailableView.search(text: viewModel.searchText)
                             }
                         } else {
-                            // List(AppKit 表格,真实单元格复用):只保留可见行,
-                            // 内存有界;布局精确,没有 LazyVStack 的高度估算空白问题。
-                            List {
-                                ForEach(viewModel.filteredMessages) { item in
-                                    messageRow(item, isLast: item.id == viewModel.filteredMessages.last?.id)
-                                        .padding(.top, item.id == viewModel.filteredMessages.first?.id ? floatingToolbarClearance : 0)
-                                        .id(item.id)
-                                        .listRowInsets(EdgeInsets())
-                                        .listRowBackground(Color.clear)
-                                        .listRowSeparator(.hidden)
-                                }
-                                if viewModel.isRefreshing {
-                                    ProgressView()
-                                        .frame(maxWidth: .infinity)
-                                        .listRowSeparator(.hidden)
-                                } else if viewModel.hasMoreMessages {
-                                    Button {
-                                        viewModel.loadMoreMessages()
-                                    } label: {
-                                        HStack {
-                                            Spacer()
-                                            if viewModel.isLoadingMore {
-                                                ProgressView().controlSize(.small)
-                                            } else {
-                                                Text(L10n.text(viewModel.historyLoadError ? "content.retry_loading" : "content.load_more"))
+                            ScrollView {
+                                LazyVStack(alignment: .leading, spacing: 0) {
+                                    ForEach(messages) { item in
+                                        messageRow(item, isLast: item.id == lastMessageID)
+                                            .id(item.id)
+                                            .background {
+                                                if item.id == prefetchMessageID {
+                                                    Color.clear.onScrollVisibilityChange(threshold: 0.1) { isVisible in
+                                                        loadMoreWhenVisible(isVisible)
+                                                    }
+                                                }
                                             }
-                                            Spacer()
-                                        }
-                                        .padding(.vertical, 8)
                                     }
-                                    .buttonStyle(.plain)
-                                    .disabled(viewModel.isLoadingMore)
-                                    .listRowSeparator(.hidden)
-                                    .id("load-more-\(viewModel.messages.count)")
-                                    .onScrollVisibilityChange(threshold: 0.1) { isVisible in
-                                        guard isVisible, !viewModel.historyLoadError,
-                                              viewModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-                                        viewModel.loadMoreMessages()
+                                    if viewModel.isRefreshing {
+                                        ProgressView()
+                                            .frame(maxWidth: .infinity)
+                                    } else if viewModel.hasMoreMessages {
+                                        Button {
+                                            viewModel.loadMoreMessages()
+                                        } label: {
+                                            HStack {
+                                                Spacer()
+                                                if viewModel.isLoadingMore {
+                                                    ProgressView().controlSize(.small)
+                                                } else {
+                                                    Text(L10n.text(viewModel.historyLoadError ? "content.retry_loading" : "content.load_more"))
+                                                }
+                                                Spacer()
+                                            }
+                                            .padding(.vertical, 8)
+                                        }
+                                        .buttonStyle(.plain)
+                                        .disabled(viewModel.isLoadingMore)
+                                        .id("load-more-\(viewModel.messages.count)")
+                                        .onScrollVisibilityChange(threshold: 0.1) { isVisible in
+                                            loadMoreWhenVisible(isVisible)
+                                        }
                                     }
                                 }
+                                // Insets belong to the content, keeping the scrollbar at the window edge.
+                                .padding(.horizontal, 16)
+                                .padding(.top, floatingToolbarClearance + 10)
+                                .padding(.bottom, 10)
                             }
-                            .listStyle(.plain)
-                            .scrollContentBackground(.hidden)
                             .scrollEdgeEffectStyle(.soft, for: .top)
-                            .contentMargins(.top, 10, for: .scrollContent)
-                            .contentMargins(.bottom, 10, for: .scrollContent)
+                            .contentMargins(.top, floatingToolbarClearance, for: .scrollIndicators)
                             .ignoresSafeArea(.container, edges: .top)
-                            .padding(.horizontal, 16)
                             .id("message-scroll-\(viewModel.selectedAppID)")
                         }
                     }
@@ -167,38 +170,15 @@ struct ContentView: View {
     }
 
     private func messageRow(_ item: GotifyMessage, isLast: Bool) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            ZStack {
+        let isExpanded = expandedMessageIDs.contains(item.id)
+        let canExpand = item.markdownPreview?.isTruncated
+            ?? MarkdownContent.previewSource(item.message, maxLines: MarkdownContent.previewLineLimit).isTruncated
+        return HStack(alignment: .top, spacing: 10) {
+            MessageActionIcon(onDelete: { viewModel.deleteMessage(item) }) {
                 appIcon(for: item.appID)
                     .onAppear {
                         viewModel.loadIconIfNeeded(for: item.appID)
                     }
-
-                Button(role: .destructive) {
-                    viewModel.deleteMessage(item)
-                } label: {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 6)
-                            .fill(Color(nsColor: .controlBackgroundColor))
-                        Image(systemName: "trash")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                    }
-                    .frame(width: 34, height: 34)
-                }
-                .buttonStyle(.plain)
-                .controlSize(.regular)
-                .opacity(hoveringMessageIDs.contains(item.id) ? 1 : 0)
-                .allowsHitTesting(hoveringMessageIDs.contains(item.id))
-            }
-            .frame(width: 34, height: 34)
-            .contentShape(Rectangle())
-            .onHover { isHovering in
-                if isHovering {
-                    hoveringMessageIDs.insert(item.id)
-                } else {
-                    hoveringMessageIDs.remove(item.id)
-                }
             }
 
             VStack(alignment: .leading, spacing: 6) {
@@ -208,11 +188,11 @@ struct ContentView: View {
                 MarkdownMessageView(
                     message: item.message,
                     fontSize: bodyFontSize,
-                    lineLimit: expandedMessageIDs.contains(item.id) ? nil : 6,
+                    lineLimit: isExpanded ? nil : MarkdownContent.previewLineLimit,
                     showsImages: true,
-                    imageMaxHeight: expandedMessageIDs.contains(item.id) ? 280 : 180
+                    imageMaxHeight: isExpanded ? 280 : 180,
+                    preparedContent: isExpanded ? nil : item.markdownPreview
                 )
-                .id("markdown-\(item.id)-\(expandedMessageIDs.contains(item.id))")
 
                 HStack(spacing: 8) {
                     Text(viewModel.appName(for: item.appID))
@@ -226,8 +206,8 @@ struct ContentView: View {
                 .font(.system(size: captionFontSize))
                 .foregroundStyle(.secondary)
 
-                if shouldShowExpandButton(for: item.message) {
-                    Button(expandedMessageIDs.contains(item.id) ? L10n.text("message.collapse") : L10n.text("message.expand")) {
+                if canExpand {
+                    Button(isExpanded ? L10n.text("message.collapse") : L10n.text("message.expand")) {
                         toggleExpanded(item.id)
                     }
                     .buttonStyle(.link)
@@ -284,9 +264,10 @@ struct ContentView: View {
             }
     }
 
-    private func shouldShowExpandButton(for message: String) -> Bool {
-        let lineCount = message.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).count
-        return lineCount > 6
+    private func loadMoreWhenVisible(_ isVisible: Bool) {
+        guard isVisible, !viewModel.historyLoadError,
+              viewModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        viewModel.loadMoreMessages()
     }
 
     private func toggleExpanded(_ messageID: Int) {
@@ -342,5 +323,33 @@ struct ContentView: View {
         let appIndex = number - 2
         guard appIndex >= 0, appIndex < viewModel.applications.count else { return }
         viewModel.selectSidebarApp(viewModel.applications[appIndex].id)
+    }
+}
+
+private struct MessageActionIcon<Icon: View>: View {
+    let onDelete: () -> Void
+    @ViewBuilder let icon: () -> Icon
+    @State private var isHovering = false
+
+    var body: some View {
+        icon()
+            .overlay {
+                if isHovering {
+                    Button(role: .destructive, action: onDelete) {
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Color(nsColor: .controlBackgroundColor))
+                            .overlay {
+                                Image(systemName: "trash")
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundStyle(.secondary)
+                            }
+                            .frame(width: 34, height: 34)
+                    }
+                    .buttonStyle(.plain)
+                    .controlSize(.regular)
+                }
+            }
+            .contentShape(Rectangle())
+            .onHover { isHovering = $0 }
     }
 }

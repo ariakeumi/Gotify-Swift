@@ -9,7 +9,7 @@ import ServiceManagement
 final class MainViewModel: ObservableObject {
     static let allAppsSelectionID = -1
 
-    private static let historyPageSize = 50
+    private static let historyPageSize = 30
     private static let statusBarMessageLimit = 8
 
     @Published private(set) var messages: [GotifyMessage] = []
@@ -423,6 +423,12 @@ final class MainViewModel: ObservableObject {
                     && page.nextSince != nil && page.nextSince != cursor
                 cursor = page.nextSince
             } while canContinue && collected.count < Self.historyPageSize
+
+            let previews = try await MarkdownContent.preparePreviews(for: collected.map(\.message))
+            guard !Task.isCancelled, historyGeneration == generation, isMainWindowOpen else { return }
+            for (index, preview) in previews.enumerated() {
+                collected[index].markdownPreview = preview
+            }
 
             nextHistorySince = cursor
             hasMoreMessages = canContinue
